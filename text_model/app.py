@@ -1,14 +1,17 @@
+import os
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import torch
 import torch.nn as nn
 from transformers import BertTokenizerFast, AutoModel
 from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
 import tempfile
-import os
-import time
 import logging
 import pandas as pd
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Set up logging with timestamps
 logging.basicConfig(
@@ -25,7 +28,6 @@ MODEL_BLOB = "model.pt"
 CSV_BLOB = "user_data.csv"
 
 # Constants
-MODEL_CHECK_INTERVAL = 300  # Check for new model every 5 minutes
 MAX_LENGTH = 15  # Same as in training code
 
 # Set device (GPU if available, else CPU)
@@ -53,60 +55,46 @@ class BERT_Arch(nn.Module):
         return x
 
 # Create router instance for text detection
-router = APIRouter(prefix="/text")
+# Using empty prefix since the main_app will mount this with the /text prefix
+router = APIRouter()
 
 # Global variables for model management
 model = None
-last_model_check = None
-current_model_version = None  # Will store the last modification time
 
 # Initialize tokenizer
 tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
 
-def load_model_from_storage():
-    """Load model from Azure Blob Storage and return the model instance"""
-    global model, current_model_version
-    
+def load_model():
+    """Load model from Azure Blob Storage"""
+    global model
     try:
         # Create BlobServiceClient
         blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
         container_client = blob_service_client.get_container_client(MODELS_CONTAINER)
         blob_client = container_client.get_blob_client(MODEL_BLOB)
         
-        # Get blob properties to check if it's a new version
-        properties = blob_client.get_blob_properties()
-        last_modified = properties.last_modified
+        # Initialize model with BERT base
+        bert = AutoModel.from_pretrained('bert-base-uncased')
+        new_model = BERT_Arch(bert)
         
-        # Only proceed with model operations if we have a new version
-        if last_modified != current_model_version:
-            logger.info(f"New model version detected. Last modified: {last_modified}")
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            # Download blob to temp file
+            download_stream = blob_client.download_blob()
+            download_stream.readinto(temp_file)
             
-            # Initialize model with BERT base
-            bert = AutoModel.from_pretrained('bert-base-uncased')
-            new_model = BERT_Arch(bert)
-            
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                # Download blob to temp file
-                download_stream = blob_client.download_blob()
-                download_stream.readinto(temp_file)
-                
-                # Load model from temp file
-                new_model.load_state_dict(torch.load(temp_file.name, map_location=device), strict=False)
-                os.unlink(temp_file.name)
-            
-            # Move model to appropriate device
-            new_model = new_model.to(device)
-            new_model.eval()
-            model = new_model
-            current_model_version = last_modified
-            logger.info(f"Model loaded successfully. Version timestamp: {current_model_version}")
-        else:
-            logger.info("Model is up to date")
+            # Load model from temp file
+            new_model.load_state_dict(torch.load(temp_file.name, map_location=device), strict=False)
+            os.unlink(temp_file.name)
+        
+        # Move model to appropriate device
+        new_model = new_model.to(device)
+        new_model.eval()
+        model = new_model
+        logger.info("Model loaded successfully")
             
     except Exception as e:
         logger.error(f"Error loading model: {e}")
-        if model is None:
-            raise HTTPException(status_code=500, detail="Model not loaded")
+        raise HTTPException(status_code=500, detail="Model not loaded")
 
 def save_user_input(text: str, prediction: str):
     """Save user input and prediction to Azure Blob Storage"""
@@ -156,18 +144,15 @@ def save_user_input(text: str, prediction: str):
         logger.error(f"Error saving user input: {e}")
         # Don't raise the error, just log it
 
-def check_and_load_new_model():
-    """Check if model needs to be reloaded"""
-    global last_model_check
-    
-    current_time = time.time()
-    if last_model_check is None or (current_time - last_model_check) > MODEL_CHECK_INTERVAL:
-        load_model_from_storage()
-        last_model_check = current_time
-
 # Define request and response models
 class TextRequest(BaseModel):
     text: str
+    
+    @field_validator('text')
+    def validate_text(cls, v):
+        if not v.strip():
+            raise ValueError("Text cannot be empty")
+        return v.strip()
 
 class TextResponse(BaseModel):
     prediction: str
@@ -175,13 +160,10 @@ class TextResponse(BaseModel):
     raw_prediction: int
 
 # Text detection endpoint
-@router.post("/predict", response_model=TextResponse)
+@router.post("/text", response_model=TextResponse)
 def predict_text(request: TextRequest):
-    # Check for new model before prediction
-    check_and_load_new_model()
-    
     if model is None:
-        raise HTTPException(status_code=500, detail="Model not loaded")
+        load_model()
     
     try:
         # Tokenize input text
@@ -221,4 +203,7 @@ def predict_text(request: TextRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Initialize model on startup
-load_model_from_storage()
+load_model()
+
+# This is important - it allows the main_app to import the router
+# The main_app will mount this router with the prefix /text
