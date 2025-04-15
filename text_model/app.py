@@ -215,6 +215,4 @@ def predict_text(request: TextRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Initialize model on startup
-load_model()
-
-# test
+load_model() 

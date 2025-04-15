@@ -12,20 +12,12 @@ import mlflow.pytorch
 from azure.storage.blob import BlobServiceClient, BlobBlock
 import tempfile
 from datetime import datetime
-import logging
 from dotenv import load_dotenv
 import uuid
 import shutil
 
 # Load environment variables from .env file
 load_dotenv()
-
-# Configure logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # Get environment variables with defaults
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '32'))
@@ -37,11 +29,8 @@ F1_THRESHOLD = float(os.getenv('F1_THRESHOLD', '0.88'))
 
 # MLflow configuration
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'file:retraining/mlflow-text/mlruns')
-MLFLOW_ARTIFACT_URI = os.getenv('MLFLOW_ARTIFACT_URI', 'wasbs://fakenewsdetection-mlflow@fakenewsdetection.blob.core.windows.net/')
-logger.info(f"Using MLflow tracking URI: {MLFLOW_TRACKING_URI}")
-logger.info(f"Using MLflow artifact URI: {MLFLOW_ARTIFACT_URI}")
+print(f"Using MLflow tracking URI: {MLFLOW_TRACKING_URI}")
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-mlflow.set_registry_uri(MLFLOW_ARTIFACT_URI)
 
 # Azure Blob Storage configuration
 CONNECTION_STRING = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
@@ -60,7 +49,7 @@ MODEL_PATH = os.getenv('MODEL_PATH', 'text_model/model.pt')
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logger.info(f"Using device: {device}")
+print(f"Using device: {device}")
 
 # =============================================================================
 # 1. Data Loading 
@@ -68,16 +57,16 @@ logger.info(f"Using device: {device}")
 def load_data_from_file(data_path=DATA_PATH):
     """Load user data from local file."""
     try:
-        logger.info(f"Loading data from: {data_path}")
+        print(f"Loading data from: {data_path}")
         data = pd.read_csv(data_path)
         if data.empty:
             raise ValueError("Data file is empty")
         if 'title' not in data.columns or 'label' not in data.columns:
             raise ValueError("Data file must contain 'title' and 'label' columns")
-        logger.info(f"Successfully loaded training data from local file: {len(data)} samples")
+        print(f"Successfully loaded training data from local file: {len(data)} samples")
         return data
     except Exception as e:
-        logger.error(f"Error loading data from local file: {e}")
+        print(f"Error loading data from local file: {e}")
         raise
 
 # =============================================================================
@@ -130,10 +119,10 @@ def load_model_from_file(model_path=None):
         model = BERT_Arch(bert).to(device)
         actual_model_path = model_path if model_path is not None else MODEL_PATH
         model.load_state_dict(torch.load(actual_model_path, map_location=device), strict=False)
-        logger.info(f"Successfully loaded model from {actual_model_path}")
+        print(f"Successfully loaded model from {actual_model_path}")
         return model
     except Exception as e:
-        logger.error(f"Error loading model from {model_path if model_path else MODEL_PATH}: {e}")
+        print(f"Error loading model from {model_path if model_path else MODEL_PATH}: {e}")
         return None
 
 def push_to_production(model):
@@ -168,17 +157,17 @@ def push_to_production(model):
         
         # Commit the blocks
         blob_client.commit_block_list(block_list)
-        logger.info(f"Model successfully uploaded to Azure Blob Storage: {MODEL_BLOB}")
+        print(f"Model successfully uploaded to Azure Blob Storage: {MODEL_BLOB}")
         return True
     except Exception as e:
-        logger.error(f"Error uploading model to Azure Blob Storage: {str(e)}")
+        print(f"Error uploading model to Azure Blob Storage: {str(e)}")
         # Try to clean up if possible
         try:
             if 'temp_path' in locals():
                 os.unlink(temp_path)
         except:
             pass
-        logger.error(f"Container: {MODELS_CONTAINER}, Blob: {MODEL_BLOB}")
+        print(f"Container: {MODELS_CONTAINER}, Blob: {MODEL_BLOB}")
         raise
     
 def promote_to_production(model, metrics, temp_dir):
@@ -194,7 +183,7 @@ def promote_to_production(model, metrics, temp_dir):
         bool: True if model was promoted, False otherwise
     """
     if metrics["test_accuracy"] > ACCURACY_THRESHOLD and metrics["test_f1"] > F1_THRESHOLD:
-        logger.info("New model meets performance thresholds. Promoting to production...")
+        print("New model meets performance thresholds. Promoting to production...")
         
         # Push model to Azure
         push_to_production(model)
@@ -203,16 +192,16 @@ def promote_to_production(model, metrics, temp_dir):
         local_model_dir = os.path.dirname(MODEL_PATH)
         os.makedirs(local_model_dir, exist_ok=True)
         torch.save(model.state_dict(), MODEL_PATH)
-        logger.info(f"Model also saved locally to {MODEL_PATH} for Docker deployment")
+        print(f"Model also saved locally to {MODEL_PATH} for Docker deployment")
         
-        logger.info(f"Model promoted with accuracy: {metrics['test_accuracy']:.3f} and F1: {metrics['test_f1']:.3f}")
+        print(f"Model promoted with accuracy: {metrics['test_accuracy']:.3f} and F1: {metrics['test_f1']:.3f}")
         mlflow.log_metric("production_model_promoted", 1)
         reset_user_data()
         return True
     else:
-        logger.info("New model did not meet performance thresholds. No promotion.")
-        logger.info(f"Required: accuracy > {ACCURACY_THRESHOLD:.3f} and F1 > {F1_THRESHOLD:.3f}")
-        logger.info(f"Actual: accuracy = {metrics['test_accuracy']:.3f}, F1 = {metrics['test_f1']:.3f}")
+        print("New model did not meet performance thresholds. No promotion.")
+        print(f"Required: accuracy > {ACCURACY_THRESHOLD:.3f} and F1 > {F1_THRESHOLD:.3f}")
+        print(f"Actual: accuracy = {metrics['test_accuracy']:.3f}, F1 = {metrics['test_f1']:.3f}")
         mlflow.log_metric("production_model_promoted", 0)
         return False
 
@@ -240,10 +229,10 @@ def archive_user_data(data_path=None, archive_dir=None):
         
         # Copy the current data to archive
         shutil.copy2(actual_data_path, archive_path)
-        logger.info(f"User data archived to {archive_path}")
+        print(f"User data archived to {archive_path}")
         return True
     except Exception as e:
-        logger.error(f"Error archiving user data: {e}")
+        print(f"Error archiving user data: {e}")
         return False
 
 def reset_user_data():
@@ -273,10 +262,10 @@ def reset_user_data():
         # Remove the temp file
         os.unlink(temp_path)
         
-        logger.info("User data CSV reset in Azure Blob Storage")
+        print("User data CSV reset in Azure Blob Storage")
         return True
     except Exception as e:
-        logger.error(f"Error resetting user data: {e}")
+        print(f"Error resetting user data: {e}")
         # Try to clean up if possible
         try:
             if 'temp_path' in locals():
@@ -324,9 +313,11 @@ def retrain():
         # Load training data
         data = load_data_from_file()
         if data is None or len(data) < 10:  # Ensure enough data for training
-            logger.warning("Insufficient data for retraining. Exiting...")
+            print("Insufficient data for retraining. Exiting...")
             return False
-
+        
+        reset_user_data()
+        
         # Split data
         data = data.sample(frac=1).reset_index(drop=True)  # Shuffle
         train_text, temp_text, train_labels, temp_labels = train_test_split(
@@ -357,7 +348,7 @@ def retrain():
             # Load existing model; if not found, initialize a new model
             model = load_model_from_file(MODEL_PATH)
             if model is None:
-                logger.error("No existing model found.")
+                print("No existing model found.")
                 exit(1)
             
             # Freeze BERT parameters; update only classifier layers
@@ -372,10 +363,10 @@ def retrain():
             experiment = mlflow.get_experiment_by_name(EXPERIMENT_NAME)
             if experiment is None:
                 experiment_id = mlflow.create_experiment(EXPERIMENT_NAME)
-                logger.info(f"Created new MLflow experiment: {EXPERIMENT_NAME}")
+                print(f"Created new MLflow experiment: {EXPERIMENT_NAME}")
             else:
                 experiment_id = experiment.experiment_id
-                logger.info(f"Using existing MLflow experiment: {EXPERIMENT_NAME}")
+                print(f"Using existing MLflow experiment: {EXPERIMENT_NAME}")
             
             mlflow.set_experiment(EXPERIMENT_NAME)
             
@@ -398,11 +389,11 @@ def retrain():
                 best_model_state = None
                 
                 for epoch in range(EPOCHS):
-                    logger.info(f"\nEpoch {epoch+1} of {EPOCHS}")
+                    print(f"\nEpoch {epoch+1} of {EPOCHS}")
                     train_loss = train_epoch(model, train_dataloader, optimizer, criterion)
                     valid_loss = evaluate_epoch(model, val_dataloader, criterion)
-                    logger.info(f"Training Loss: {train_loss:.3f}")
-                    logger.info(f"Validation Loss: {valid_loss:.3f}")
+                    print(f"Training Loss: {train_loss:.3f}")
+                    print(f"Validation Loss: {valid_loss:.3f}")
                     
                     # Save best model if validation improves
                     if valid_loss < best_valid_loss:
@@ -420,12 +411,12 @@ def retrain():
                         
                         # Log the artifact to MLflow with date in path
                         mlflow.log_artifact(best_model_path, artifact_path=f"models/best_{current_date}")
-                        logger.info(f"New best model saved to models/best_{current_date}/best_model.pt!")
+                        print(f"New best model saved to models/best_{current_date}/best_model.pt!")
                 
                 # Restore the best model for evaluation
                 if best_model_state is not None:
                     model.load_state_dict(best_model_state)
-                    logger.info("Restored best model for evaluation")
+                    print("Restored best model for evaluation")
                 
                 # Evaluate best model on test set
                 model.eval()
@@ -446,9 +437,9 @@ def retrain():
                 
                 # Log metrics and promote if successful
                 mlflow.log_metrics(metrics)
-                logger.info("Final Test Metrics for Best Model:")
+                print("Final Test Metrics for Best Model:")
                 for name, value in metrics.items():
-                    logger.info(f"{name}: {value:.3f}")
+                    print(f"{name}: {value:.3f}")
                 
                 # Promote the best model (not the final one)
                 promoted = promote_to_production(model, metrics, temp_dir)
@@ -456,12 +447,12 @@ def retrain():
                 # Log the best model with date-based versioning using more efficient API
                 current_date = datetime.now().strftime("%d%m%Y")
                 mlflow.pytorch.log_model(model, f"models/production_{current_date}")
-                logger.info(f"Final model saved to models/production_{current_date}")
+                print(f"Final model saved to models/production_{current_date}")
                 
                 return promoted
                 
     except Exception as e:
-        logger.error(f"Error in retraining process: {str(e)}")
+        print(f"Error in retraining process: {str(e)}")
         raise
 
 # =============================================================================
