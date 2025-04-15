@@ -13,7 +13,6 @@ from azure.storage.blob import BlobServiceClient, BlobBlock
 import tempfile
 from datetime import datetime
 import logging
-from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 import uuid
 import shutil
@@ -37,7 +36,7 @@ ACCURACY_THRESHOLD = float(os.getenv('ACCURACY_THRESHOLD', '0.88'))
 F1_THRESHOLD = float(os.getenv('F1_THRESHOLD', '0.88'))
 
 # MLflow configuration
-MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'file:./mlruns')
+MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'file:retraining/mlflow-text/mlruns')
 MLFLOW_ARTIFACT_URI = os.getenv('MLFLOW_ARTIFACT_URI', 'wasbs://fakenewsdetection-mlflow@fakenewsdetection.blob.core.windows.net/')
 logger.info(f"Using MLflow tracking URI: {MLFLOW_TRACKING_URI}")
 logger.info(f"Using MLflow artifact URI: {MLFLOW_ARTIFACT_URI}")
@@ -53,18 +52,18 @@ MODEL_BLOB = os.getenv('MODEL_BLOB', 'model.pt')
 CSV_BLOB = os.getenv('CSV_BLOB', 'user_data.csv')
 
 # Data path configuration
-DATA_PATH = os.getenv('DATA_PATH', 'text_IEP/datasets/text_data/user_data.csv')
-ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'text_IEP/datasets/text_data/')
+DATA_PATH = os.getenv('DATA_PATH', 'datasets/text_data/user_data.csv')
+ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'datasets/text_data/')
 
 # Model path configuration
-MODEL_PATH = os.getenv('MODEL_PATH', 'text_IEP/text_model/model.pt')
+MODEL_PATH = os.getenv('MODEL_PATH', 'text_model/model.pt')
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 
 # =============================================================================
-# 1. Data Loading & Preparation
+# 1. Data Loading 
 # =============================================================================
 def load_data_from_file(data_path=DATA_PATH):
     """Load user data from local file."""
@@ -131,10 +130,10 @@ def load_model_from_file(model_path=None):
         model = BERT_Arch(bert).to(device)
         actual_model_path = model_path if model_path is not None else MODEL_PATH
         model.load_state_dict(torch.load(actual_model_path, map_location=device), strict=False)
-        logger.info("Successfully loaded model from local file")
+        logger.info(f"Successfully loaded model from {actual_model_path}")
         return model
     except Exception as e:
-        logger.error(f"Error loading model from local file: {e}")
+        logger.error(f"Error loading model from {model_path if model_path else MODEL_PATH}: {e}")
         return None
 
 def push_to_production(model):
@@ -181,6 +180,41 @@ def push_to_production(model):
             pass
         logger.error(f"Container: {MODELS_CONTAINER}, Blob: {MODEL_BLOB}")
         raise
+    
+def promote_to_production(model, metrics, temp_dir):
+    """
+    Promotes a model to production if it meets performance criteria.
+    
+    Args:
+        model: The model to potentially promote to production
+        metrics: Dictionary of evaluation metrics
+        temp_dir: Temporary directory for file operations
+        
+    Returns:
+        bool: True if model was promoted, False otherwise
+    """
+    if metrics["test_accuracy"] > ACCURACY_THRESHOLD and metrics["test_f1"] > F1_THRESHOLD:
+        logger.info("New model meets performance thresholds. Promoting to production...")
+        
+        # Push model to Azure
+        push_to_production(model)
+        
+        # Also save the model to local file for Docker deployment
+        local_model_dir = os.path.dirname(MODEL_PATH)
+        os.makedirs(local_model_dir, exist_ok=True)
+        torch.save(model.state_dict(), MODEL_PATH)
+        logger.info(f"Model also saved locally to {MODEL_PATH} for Docker deployment")
+        
+        logger.info(f"Model promoted with accuracy: {metrics['test_accuracy']:.3f} and F1: {metrics['test_f1']:.3f}")
+        mlflow.log_metric("production_model_promoted", 1)
+        reset_user_data()
+        return True
+    else:
+        logger.info("New model did not meet performance thresholds. No promotion.")
+        logger.info(f"Required: accuracy > {ACCURACY_THRESHOLD:.3f} and F1 > {F1_THRESHOLD:.3f}")
+        logger.info(f"Actual: accuracy = {metrics['test_accuracy']:.3f}, F1 = {metrics['test_f1']:.3f}")
+        mlflow.log_metric("production_model_promoted", 0)
+        return False
 
 def archive_user_data(data_path=None, archive_dir=None):
     """Archives the current user data before resetting.
@@ -281,26 +315,6 @@ def evaluate_epoch(model, val_dataloader, criterion):
             total_loss += loss.item()
     return total_loss / len(val_dataloader)
 
-def promote_to_production(model, metrics, temp_dir):
-    """
-    Promotes a model to production if it meets performance criteria.
-    """
-    if metrics["test_accuracy"] > ACCURACY_THRESHOLD and metrics["test_f1"] > F1_THRESHOLD:
-        logger.info("New model meets performance thresholds. Promoting to production...")
-        temp_model_path = os.path.join(temp_dir, "model.pt")
-        torch.save(model.state_dict(), temp_model_path)
-        push_to_production(model)
-        logger.info(f"Model promoted with accuracy: {metrics['test_accuracy']:.3f} and F1: {metrics['test_f1']:.3f}")
-        mlflow.log_metric("production_model_promoted", 1)
-        reset_user_data()
-        return True
-    else:
-        logger.info("New model did not meet performance thresholds. No promotion.")
-        logger.info(f"Required: accuracy > {ACCURACY_THRESHOLD:.3f} and F1 > {F1_THRESHOLD:.3f}")
-        logger.info(f"Actual: accuracy = {metrics['test_accuracy']:.3f}, F1 = {metrics['test_f1']:.3f}")
-        mlflow.log_metric("production_model_promoted", 0)
-        return False
-
 # =============================================================================
 # 6. Main Retraining Function
 # =============================================================================
@@ -343,8 +357,8 @@ def retrain():
             # Load existing model; if not found, initialize a new model
             model = load_model_from_file(MODEL_PATH)
             if model is None:
-                logger.warning("No existing model found. Initializing new model...")
-                model = BERT_Arch(bert).to(device)
+                logger.error("No existing model found.")
+                exit(1)
             
             # Freeze BERT parameters; update only classifier layers
             for param in model.bert.parameters():
@@ -368,7 +382,6 @@ def retrain():
             with mlflow.start_run(experiment_id=experiment_id) as run:
                 # Log metadata and hyperparameters
                 current_date = datetime.now().strftime("%d%m%Y")
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 mlflow.set_tag("mlflow.runName", f"retrain-{current_date}")
                 mlflow.set_tag("mlflow.source.type", "PROJECT")
                 mlflow.set_tag("mlflow.source.git.commit", os.getenv('GIT_COMMIT', 'unknown'))
@@ -381,6 +394,9 @@ def retrain():
                 
                 # Training loop
                 best_valid_loss = float('inf')
+                best_model_path = os.path.join(temp_dir, "best_model.pt")
+                best_model_state = None
+                
                 for epoch in range(EPOCHS):
                     logger.info(f"\nEpoch {epoch+1} of {EPOCHS}")
                     train_loss = train_epoch(model, train_dataloader, optimizer, criterion)
@@ -391,12 +407,27 @@ def retrain():
                     # Save best model if validation improves
                     if valid_loss < best_valid_loss:
                         best_valid_loss = valid_loss
-                        temp_model_path = os.path.join(temp_dir, "model.pt")
-                        torch.save(model.state_dict(), temp_model_path)
-                        mlflow.log_artifact(temp_model_path, artifact_path="models")
-                        logger.info("New best model saved!")
+                        
+                        # Create a date-based folder name
+                        current_date = datetime.now().strftime("%d%m%Y")
+                        
+                        # Save the model state dict
+                        best_model_path = os.path.join(temp_dir, "best_model.pt")
+                        torch.save(model.state_dict(), best_model_path)
+                        
+                        # Store the best model state for later use
+                        best_model_state = {key: val.cpu().clone() for key, val in model.state_dict().items()}
+                        
+                        # Log the artifact to MLflow with date in path
+                        mlflow.log_artifact(best_model_path, artifact_path=f"models/best_{current_date}")
+                        logger.info(f"New best model saved to models/best_{current_date}/best_model.pt!")
                 
-                # Evaluate final model on test set
+                # Restore the best model for evaluation
+                if best_model_state is not None:
+                    model.load_state_dict(best_model_state)
+                    logger.info("Restored best model for evaluation")
+                
+                # Evaluate best model on test set
                 model.eval()
                 test_seq_device = test_seq.to(device)
                 test_mask_device = test_mask.to(device)
@@ -415,17 +446,17 @@ def retrain():
                 
                 # Log metrics and promote if successful
                 mlflow.log_metrics(metrics)
-                logger.info("Final Test Metrics:")
+                logger.info("Final Test Metrics for Best Model:")
                 for name, value in metrics.items():
                     logger.info(f"{name}: {value:.3f}")
                 
+                # Promote the best model (not the final one)
                 promoted = promote_to_production(model, metrics, temp_dir)
                 
-                # Log final model with date-based versioning
+                # Log the best model with date-based versioning using more efficient API
                 current_date = datetime.now().strftime("%d%m%Y")
-                temp_model_path = os.path.join(temp_dir, "model.pt")
-                torch.save(model.state_dict(), temp_model_path)
-                mlflow.pytorch.log_model(model, f"model_{current_date}")
+                mlflow.pytorch.log_model(model, f"models/production_{current_date}")
+                logger.info(f"Final model saved to models/production_{current_date}")
                 
                 return promoted
                 
@@ -437,4 +468,5 @@ def retrain():
 # Main execution
 # =============================================================================
 if __name__ == "__main__":
-    retrain()
+    success = retrain()
+    exit(0 if success else 1)

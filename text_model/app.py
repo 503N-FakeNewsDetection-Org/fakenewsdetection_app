@@ -65,17 +65,29 @@ model = None
 tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
 
 def load_model():
-    """Load model from Azure Blob Storage"""
+    """Load model from local file or Azure Blob Storage"""
     global model
     try:
+        # Initialize model with BERT base
+        bert = AutoModel.from_pretrained('bert-base-uncased')
+        new_model = BERT_Arch(bert)
+        
+        # First try to load model from local file
+        local_model_path = os.path.join(os.path.dirname(__file__), "model.pt")
+        if os.path.exists(local_model_path):
+            logger.info(f"Found local model at {local_model_path}")
+            new_model.load_state_dict(torch.load(local_model_path, map_location=device), strict=False)
+            new_model = new_model.to(device)
+            new_model.eval()
+            model = new_model
+            logger.info("Model loaded successfully from local file")
+            return
+        
+        logger.info("No local model found, downloading from Azure...")
         # Create BlobServiceClient
         blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
         container_client = blob_service_client.get_container_client(MODELS_CONTAINER)
         blob_client = container_client.get_blob_client(MODEL_BLOB)
-        
-        # Initialize model with BERT base
-        bert = AutoModel.from_pretrained('bert-base-uncased')
-        new_model = BERT_Arch(bert)
         
         with tempfile.NamedTemporaryFile(delete=False) as temp_file:
             # Download blob to temp file
@@ -90,7 +102,7 @@ def load_model():
         new_model = new_model.to(device)
         new_model.eval()
         model = new_model
-        logger.info("Model loaded successfully")
+        logger.info("Model loaded successfully from Azure")
             
     except Exception as e:
         logger.error(f"Error loading model: {e}")
@@ -204,6 +216,3 @@ def predict_text(request: TextRequest):
 
 # Initialize model on startup
 load_model()
-
-# This is important - it allows the main_app to import the router
-# The main_app will mount this router with the prefix /text
