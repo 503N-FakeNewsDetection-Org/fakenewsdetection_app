@@ -1,0 +1,102 @@
+name: Model Retraining & Upload To Azure Storage
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Run weekly at midnight on Sunday
+  workflow_dispatch:     # Allow manual triggering
+
+env:
+  PYTHON_VERSION: '3.9'
+  MODELS_CONTAINER: "fakenewsdetection-models"
+  CSV_CONTAINER: "fakenewsdetection-csv"
+  MODEL_BLOB: "model.pt"
+  CSV_BLOB: "user_data.csv"
+  MLFLOW_TRACKING_URI: "file:./mlruns"
+  MLFLOW_ARTIFACT_URI: "wasbs://fakenewsdetection-mlflow@fakenewsdetection.blob.core.windows.net/"
+
+jobs:
+  retrain-model:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install mlflow azure-storage-blob torch transformers pandas numpy scikit-learn
+
+    - name: Download current model
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python -c "
+        from azure.storage.blob import BlobServiceClient
+        import os
+        
+        connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+        container_name = os.getenv('MODELS_CONTAINER')
+        blob_name = os.getenv('MODEL_BLOB')
+        
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service_client.get_container_client(container_name)
+        blob_client = container_client.get_blob_client(blob_name)
+        
+        with open('text_IEP/text_model/model.pt', 'wb') as f:
+            data = blob_client.download_blob()
+            data.readinto(f)
+        "
+
+    - name: Download user data
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python -c "
+        from azure.storage.blob import BlobServiceClient
+        import os
+        
+        connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
+        container_name = os.getenv('CSV_CONTAINER')
+        blob_name = os.getenv('CSV_BLOB')
+        
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service_client.get_container_client(container_name)
+        blob_client = container_client.get_blob_client(blob_name)
+        
+        with open('text_IEP/datasets/text_user_data.csv', 'wb') as f:
+            data = blob_client.download_blob()
+            data.readinto(f)
+        "
+
+    - name: Save training data to repo
+      run: |
+        cp text_IEP/datasets/text_user_data.csv datasets/text_user_data_$(date +%Y%m%d).csv
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add datasets/text_user_data_$(date +%Y%m%d).csv
+        git commit -m "Save texttraining data for $(date +%Y%m%d)"
+        git push
+
+    - name: Run retraining script
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+        MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+      run: |
+        python text_IEP/retraining/text_retrain.py
+
+    - name: Notify on failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: 'Model Retraining Failed',
+            body: 'The automated model retraining process failed. Please check the logs.'
+          }) 
