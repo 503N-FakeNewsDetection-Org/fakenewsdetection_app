@@ -216,3 +216,5 @@ def predict_text(request: TextRequest):
 
 # Initialize model on startup
 load_model()
+
+# test
