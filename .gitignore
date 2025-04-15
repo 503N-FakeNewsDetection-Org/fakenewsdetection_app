@@ -1,4 +1,5 @@
-**/model.pt
-**/__pycache__
+model.pt
+__pycache__
 .env
-**/user_data.csv
+user_data.csv
+best_model.pt
