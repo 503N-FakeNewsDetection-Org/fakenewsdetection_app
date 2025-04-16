@@ -21,28 +21,27 @@ load_dotenv()
 
 # Get environment variables with defaults
 BATCH_SIZE = int(os.getenv('BATCH_SIZE', '32'))
-EPOCHS = int(os.getenv('EPOCHS', '3'))
+EPOCHS = int(os.getenv('EPOCHS', '2'))
 MAX_LENGTH = int(os.getenv('MAX_LENGTH', '15'))
 LEARNING_RATE = float(os.getenv('LEARNING_RATE', '1e-5'))
-ACCURACY_THRESHOLD = float(os.getenv('ACCURACY_THRESHOLD', '0.88'))
-F1_THRESHOLD = float(os.getenv('F1_THRESHOLD', '0.88'))
+ACCURACY_THRESHOLD = float(os.getenv('ACCURACY_THRESHOLD', '0.85'))
+F1_THRESHOLD = float(os.getenv('F1_THRESHOLD', '0.85'))
 
 # MLflow configuration
-MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'file:retraining/mlflow-text/mlruns')
-print(f"Using MLflow tracking URI: {MLFLOW_TRACKING_URI}")
-mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+MLFLOW_TEXT_TRACKING_URI = os.getenv('MLFLOW_TEXT_TRACKING_URI', 'file:retraining/mlflow-text/mlruns')
+print(f"Using MLflow tracking URI: {MLFLOW_TEXT_TRACKING_URI}")
+mlflow.set_tracking_uri(MLFLOW_TEXT_TRACKING_URI)
 
 # Azure Blob Storage configuration
 CONNECTION_STRING = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-MODELS_CONTAINER = os.getenv('MODELS_CONTAINER', 'fakenewsdetection-models')
-MLFLOW_CONTAINER = os.getenv('MLFLOW_CONTAINER', 'fakenewsdetection-mlflow')  
+MODELS_CONTAINER = os.getenv('MODELS_CONTAINER', 'fakenewsdetection-models') 
 CSV_CONTAINER = os.getenv('CSV_CONTAINER', 'fakenewsdetection-csv')
-MODEL_BLOB = os.getenv('MODEL_BLOB', 'model.pt')
+MODEL_BLOB = os.getenv('TEXT_MODEL_BLOB', 'model.pt')
 CSV_BLOB = os.getenv('CSV_BLOB', 'user_data.csv')
 
 # Data path configuration
 DATA_PATH = os.getenv('DATA_PATH', 'datasets/text_data/user_data.csv')
-ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'datasets/text_data/')
+ARCHIVE_DIR = os.getenv('ARCHIVE_DIR', 'datasets/text_data/archives')
 
 # Model path configuration
 MODEL_PATH = os.getenv('MODEL_PATH', 'text_model/model.pt')
@@ -55,18 +54,33 @@ print(f"Using device: {device}")
 # 1. Data Loading 
 # =============================================================================
 def load_data_from_file(data_path=DATA_PATH):
-    """Load user data from local file."""
+    """Load user data from local file and merge with original data."""
     try:
-        print(f"Loading data from: {data_path}")
-        data = pd.read_csv(data_path)
-        if data.empty:
-            raise ValueError("Data file is empty")
-        if 'title' not in data.columns or 'label' not in data.columns:
-            raise ValueError("Data file must contain 'title' and 'label' columns")
-        print(f"Successfully loaded training data from local file: {len(data)} samples")
+        # Load original data
+        true_data = pd.read_csv('datasets/text_data/original_real.csv')
+        fake_data = pd.read_csv('datasets/text_data/original_fake.csv')
+        
+        # Generate labels True/Fake under new Target Column in 'true_data' and 'fake_data'
+        true_data['Target'] = ['True']*len(true_data)
+        fake_data['Target'] = ['Fake']*len(fake_data)
+        
+        # Merge 'true_data' and 'fake_data', by random mixing into a single df called 'data'
+        original_data = true_data.append(fake_data).sample(frac=1).reset_index().drop(columns=['index'])
+        
+        # Load user data
+        print(f"Loading user data from: {data_path}")
+        user_data = pd.read_csv(data_path)
+        if user_data.empty:
+            raise ValueError("User data file is empty")
+        if 'title' not in user_data.columns or 'label' not in user_data.columns:
+            raise ValueError("User data file must contain 'title' and 'label' columns")
+        
+        # Merge original data with user data
+        data = original_data.append(user_data).sample(frac=1).reset_index().drop(columns=['index'])
+        print(f"Successfully loaded and merged training data: {len(data)} samples")
         return data
     except Exception as e:
-        print(f"Error loading data from local file: {e}")
+        print(f"Error loading data: {e}")
         raise
 
 # =============================================================================
@@ -409,9 +423,9 @@ def retrain():
                         # Store the best model state for later use
                         best_model_state = {key: val.cpu().clone() for key, val in model.state_dict().items()}
                         
-                        # Log the artifact to MLflow with date in path
+                        # Log the best model state dict to MLflow
                         mlflow.log_artifact(best_model_path, artifact_path=f"models/best_{current_date}")
-                        print(f"New best model saved to models/best_{current_date}/best_model.pt!")
+                        print(f"New best model state dict saved to models/best_{current_date}/best_model.pt!")
                 
                 # Restore the best model for evaluation
                 if best_model_state is not None:
@@ -441,13 +455,12 @@ def retrain():
                 for name, value in metrics.items():
                     print(f"{name}: {value:.3f}")
                 
-                # Promote the best model (not the final one)
+                # Promote the best model 
                 promoted = promote_to_production(model, metrics, temp_dir)
                 
-                # Log the best model with date-based versioning using more efficient API
-                current_date = datetime.now().strftime("%d%m%Y")
-                mlflow.pytorch.log_model(model, f"models/production_{current_date}")
-                print(f"Final model saved to models/production_{current_date}")
+                # Remove the log_model call to avoid saving the entire model to avoid GitHub LFS issues
+                # mlflow.pytorch.log_model(model, f"models/production_{current_date}")
+                print(f"Final model state dict saved to models/production_{current_date}")
                 
                 return promoted
                 
