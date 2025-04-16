@@ -6,13 +6,12 @@ on:
   workflow_dispatch:     # Allow manual triggering
 
 env:
-  PYTHON_VERSION: "3.9"
+  PYTHON_VERSION: "3.10"
   MODELS_CONTAINER: "fakenewsdetection-models"
   CSV_CONTAINER: "fakenewsdetection-csv"
-  MODEL_BLOB: "model.pt"
+  TETXT_MODEL_BLOB: "model.pt"
   CSV_BLOB: "user_data.csv"
   MLFLOW_TRACKING_URI: "file:retraining/mlflow-text/mlruns"
-  MLFLOW_ARTIFACT_URI: "wasbs://fakenewsdetection-mlflow@fakenewsdetection.blob.core.windows.net/"
 
 jobs:
   run-tests:
@@ -28,7 +27,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install mlflow azure-storage-blob torch transformers pandas numpy scikit-learn pytest
 
       - name: Run unit tests
@@ -56,60 +54,24 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
           pip install mlflow azure-storage-blob torch transformers pandas numpy scikit-learn
 
 
-      - name: Download current model
-        env:
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      - name: Download current model 
         run: |
-          python -c "
-          from azure.storage.blob import BlobServiceClient
-          import os
-          
-          connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-          container_name = os.getenv('MODELS_CONTAINER')
-          blob_name = os.getenv('MODEL_BLOB')
-          
-          blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-          container_client = blob_service_client.get_container_client(container_name)
-          blob_client = container_client.get_blob_client(blob_name)
-          
-          with open('text_model/model.pt', 'wb') as f:
-              data = blob_client.download_blob()
-              data.readinto(f)
-          "
+          az storage blob download \
+            --container-name $MODELS_CONTAINER \
+            --name $TEXT_MODEL_BLOB \
+            --file text_model/model.pt \
+            --connection-string ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
 
-      - name: Download user data
-        env:
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      - name: Download user CSV
         run: |
-          python -c "
-          from azure.storage.blob import BlobServiceClient
-          import os
-          
-          connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-          container_name = os.getenv('CSV_CONTAINER')
-          blob_name = os.getenv('CSV_BLOB')
-          
-          blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-          container_client = blob_service_client.get_container_client(container_name)
-          blob_client = container_client.get_blob_client(blob_name)
-          
-          with open('datasets/text_data/user_data.csv', 'wb') as f:
-              data = blob_client.download_blob()
-              data.readinto(f)
-          "
-
-      - name: Save training data to repo
-        run: |
-          cp datasets/text_data/user_data.csv datasets/text_data/user_data_$(date +%Y%m%d).csv
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add datasets/text_data/user_data_$(date +%Y%m%d).csv
-          git commit -m "Save text training data for $(date +%Y%m%d)"
-          git push
+          az storage blob download \
+            --container-name $CSV_CONTAINER \
+            --name $CSV_BLOB \
+            --file datasets/text_data/user_data.csv \
+            --connection-string ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
 
       - name: Run retraining script
         id: retrain
@@ -121,14 +83,16 @@ jobs:
           python retraining/text_retrain.py
           echo "retrain_success=$?" >> $GITHUB_OUTPUT
 
-      - name: Commit MLflow results
+      - name: Commit MLflow results and archived user data
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add retraining/mlflow-text/
-          git commit -m "Update MLflow metrics and artifacts"
+          git add datasets/text_data/archives/
+          git commit -m "Update MLflow text folder and archived user data"
           git push
-
+        
+        
   deploy-model:
     needs: retrain-model
     if: ${{ needs.retrain-model.outputs.retrain_success == 0 }}

@@ -2,7 +2,7 @@ fastapi==0.115.12
 uvicorn==0.34.0
 pydantic==2.10.3
 torch==2.6.0
-transformers==4.25.1
+transformers==4.51.3
 azure-storage-blob==12.25.1
 python-dotenv==1.0.1
 pandas==1.5.3
