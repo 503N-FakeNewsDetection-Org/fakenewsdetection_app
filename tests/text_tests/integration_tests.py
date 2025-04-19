@@ -113,37 +113,41 @@ class TextRetrainingIntegrationTests(unittest.TestCase):
         shutil.rmtree(self.test_dir)
     
     def test_archive_user_data(self):
-        """Test that user data is properly archived."""
+        """Test that user data is properly archived by copying."""
         # Create a project-like directory structure in the temp directory
         project_dir = os.path.join(self.test_dir, 'text_IEP')
         datasets_dir = os.path.join(project_dir, 'datasets')
         data_dir = os.path.join(datasets_dir, 'text_data')
-        os.makedirs(data_dir, exist_ok=True)
+        archive_dir = os.path.join(data_dir, 'archives') # Define archive dir path
+        os.makedirs(archive_dir, exist_ok=True) # Create archive dir
         
-        # Create a test file in the temp structure
+        # Create a test user data file
         test_file_path = os.path.join(data_dir, 'user_data.csv')
         self.sample_data.to_csv(test_file_path, index=False)
         
-        # Load the data using load_data_from_file with our test path
-        loaded_data = load_data_from_file(test_file_path)
-        self.assertIsNotNone(loaded_data, "Failed to load data from test file")
-        self.assertEqual(len(loaded_data), 20, "Loaded data has incorrect length")
-        
         # Call the archive function with our test paths
-        result = archive_user_data(test_file_path, data_dir)
+        result = archive_user_data(test_file_path, archive_dir)
         
         # Verify the function was successful
         self.assertTrue(result, "Archive function returned False, indicating an error")
         
-        # Check that archive file was created in our test directory
-        archive_files = [f for f in os.listdir(data_dir) if f.startswith('user_data_') and f.endswith('.csv')]
-        self.assertTrue(len(archive_files) > 0, f"No archive files found in {data_dir}")
+        # Check that archive file was created in the specified archive directory
+        archive_files = [f for f in os.listdir(archive_dir) if f.startswith('user_data_') and f.endswith('.csv')]
+        self.assertEqual(len(archive_files), 1, f"Expected 1 archive file in {archive_dir}, found {len(archive_files)}")
         
-        # Verify the content of the archive using load_data_from_file
-        archive_path = os.path.join(data_dir, archive_files[0])
-        archived_data = load_data_from_file(archive_path)
-        self.assertEqual(len(archived_data), 20)  # 9 real + 11 fake
-        self.assertEqual(sum(archived_data['label']), 11)  # 11 fake
+        # Verify the content of the archive by reading it directly
+        archive_path = os.path.join(archive_dir, archive_files[0])
+        # Use pd.read_csv directly on the archive file, not load_data_from_file
+        archived_data_direct = pd.read_csv(archive_path)
+
+        # Sort both dataframes to ensure comparison is order-independent
+        expected_data_sorted = self.sample_data.sort_values(by='title').reset_index(drop=True)
+        archived_data_sorted = archived_data_direct.sort_values(by='title').reset_index(drop=True)
+
+        # Compare the directly read archive data with the original sample data
+        pd.testing.assert_frame_equal(archived_data_sorted, expected_data_sorted)
+        self.assertEqual(len(archived_data_direct), 20) # Check length explicitly
+        self.assertEqual(sum(archived_data_direct['label']), 11) # Check label sum explicitly
     
     @patch('retraining.text_retrain.BlobServiceClient')
     def test_push_to_production(self, mock_blob_service):

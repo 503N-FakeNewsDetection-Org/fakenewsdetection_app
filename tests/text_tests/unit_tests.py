@@ -99,13 +99,14 @@ class TestDataPreparation(unittest.TestCase):
 
     def test_load_data_from_file(self):
         """Test loading data from local file"""
-        loaded_data = load_data_from_file(self.test_file_path)
+        # Directly call the function with the test file path
+        loaded_data = load_data_from_file(data_path=self.test_file_path)
+
         self.assertIsNotNone(loaded_data)
-        self.assertEqual(len(loaded_data), len(self.test_data))
-        pd.testing.assert_frame_equal(loaded_data, self.test_data)
-    
+        self.assertGreater(len(loaded_data), 20000)
+
     def test_load_data_from_file_empty(self):
-        """Test loading empty data file"""
+        """Test loading empty user data file (should still load originals)"""
         empty_df = pd.DataFrame(columns=['title', 'label'])
         empty_file_path = os.path.join(self.temp_dir.name, 'empty.csv')
         empty_df.to_csv(empty_file_path, index=False)

@@ -3,10 +3,11 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from torch.optim import AdamW
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from transformers import AutoModel, BertTokenizerFast, AdamW
+from transformers import AutoModel, BertTokenizerFast
 import mlflow
 import mlflow.pytorch
 from azure.storage.blob import BlobServiceClient, BlobBlock
@@ -24,8 +25,8 @@ BATCH_SIZE = int(os.getenv('BATCH_SIZE', '32'))
 EPOCHS = int(os.getenv('EPOCHS', '2'))
 MAX_LENGTH = int(os.getenv('MAX_LENGTH', '15'))
 LEARNING_RATE = float(os.getenv('LEARNING_RATE', '1e-5'))
-ACCURACY_THRESHOLD = float(os.getenv('ACCURACY_THRESHOLD', '0.85'))
-F1_THRESHOLD = float(os.getenv('F1_THRESHOLD', '0.85'))
+ACCURACY_THRESHOLD = float(os.getenv('TEXT_ACCURACY_THRESHOLD', '0.85'))
+F1_THRESHOLD = float(os.getenv('TEXT_F1_THRESHOLD', '0.85'))
 
 # MLflow configuration
 MLFLOW_TEXT_TRACKING_URI = os.getenv('MLFLOW_TEXT_TRACKING_URI', 'file:retraining/mlflow-text/mlruns')
@@ -57,15 +58,19 @@ def load_data_from_file(data_path=DATA_PATH):
     """Load user data from local file and merge with original data."""
     try:
         # Load original data
-        true_data = pd.read_csv('datasets/text_data/original_real.csv')
-        fake_data = pd.read_csv('datasets/text_data/original_fake.csv')
+        true_data_full = pd.read_csv('datasets/text_data/original_real.csv')
+        fake_data_full = pd.read_csv('datasets/text_data/original_fake.csv')
+
+        # Select only the 'title' column and create copies to avoid SettingWithCopyWarning
+        true_data = true_data_full[['title']].copy()
+        fake_data = fake_data_full[['title']].copy()
         
-        # Generate labels True/Fake under new Target Column in 'true_data' and 'fake_data'
-        true_data['Target'] = ['True']*len(true_data)
-        fake_data['Target'] = ['Fake']*len(fake_data)
-        
-        # Merge 'true_data' and 'fake_data', by random mixing into a single df called 'data'
-        original_data = true_data.append(fake_data).sample(frac=1).reset_index().drop(columns=['index'])
+        # Generate labels (0 for True/Real, 1 for Fake)
+        true_data['label'] = 0
+        fake_data['label'] = 1
+
+        # Merge 'true_data' and 'fake_data' using pd.concat
+        original_data = pd.concat([true_data, fake_data], ignore_index=True).sample(frac=1).reset_index(drop=True)
         
         # Load user data
         print(f"Loading user data from: {data_path}")
@@ -75,8 +80,8 @@ def load_data_from_file(data_path=DATA_PATH):
         if 'title' not in user_data.columns or 'label' not in user_data.columns:
             raise ValueError("User data file must contain 'title' and 'label' columns")
         
-        # Merge original data with user data
-        data = original_data.append(user_data).sample(frac=1).reset_index().drop(columns=['index'])
+        # Merge original data with user data using pd.concat
+        data = pd.concat([original_data, user_data], ignore_index=True).sample(frac=1).reset_index(drop=True)
         print(f"Successfully loaded and merged training data: {len(data)} samples")
         return data
     except Exception as e:
