@@ -127,23 +127,17 @@ def save_image_to_blob(image_bytes: bytes, filename: str, prediction: str):
             logger.warning(f"Unknown prediction '{prediction}', cannot save image.")
             return
 
-        # Calculate SHA256 hash of the image content
         image_hash = hashlib.sha256(image_bytes).hexdigest()
-
-        # Use the hash as the blob name. Extension is omitted for pure content addressing.
         blob_name = image_hash
-        # Optional: could store original filename in metadata if needed later
-        # metadata = {"original_filename": filename}
-
-        # Create BlobServiceClient and ContainerClient
+        metadata = {"original_filename": filename}
         blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        # Get container client, create container if it doesn't exist
+
         try:
             container_client = blob_service_client.get_container_client(target_container)
             # Check if container exists by trying to get properties
             container_client.get_container_properties()
         except Exception as container_error:
-            # Catching specific ResourceNotFoundError is better if possible
+
             logger.info(f"Container '{target_container}' not found or error accessing: {container_error}. Attempting to create it.")
             try:
                  container_client = blob_service_client.create_container(target_container)
@@ -151,26 +145,20 @@ def save_image_to_blob(image_bytes: bytes, filename: str, prediction: str):
                  logger.error(f"Failed to create container '{target_container}': {creation_error}")
                  return # Cannot proceed without container
 
-        # Get BlobClient for the specific hash
         blob_client = container_client.get_blob_client(blob_name)
-
-        # Check if blob with this hash already exists
         if blob_client.exists():
             logger.info(f"Duplicate image detected (Hash: {image_hash}). Skipping upload to '{target_container}'. Original filename: '{filename}'")
             return
         else:
             # Upload the image if it doesn't exist
             logger.info(f"Uploading new image (Hash: {image_hash}) as '{blob_name}' to container '{target_container}'. Original filename: '{filename}'")
-            # blob_client.upload_blob(image_bytes, metadata=metadata) # <-- If using metadata
-            blob_client.upload_blob(image_bytes)
+            blob_client.upload_blob(image_bytes, metadata=metadata)
             logger.info(f"Image successfully uploaded.")
 
     except Exception as e:
         logger.error(f"Error saving image file to blob storage: {e}", exc_info=True)
-        # Don't raise error to the user, just log it
 
-# Define request and response models
-# We'll use File(...) for image upload directly
+
 class ImageResponse(BaseModel):
     prediction: str # "AI" or "Human"
     confidence: float # Percentage
@@ -192,14 +180,7 @@ async def predict_image(file: UploadFile = File(...)):
             logger.error(f"Error opening image: {img_err}")
             raise HTTPException(status_code=400, detail="Invalid image file")
         
-        # Preprocess the image using the explicit transform pipeline (matching fine-tuning approach)
-        # First apply the transform to get a tensor
-        img_tensor = transform(img).unsqueeze(0).to(device)
-        
-        # For SigLIP model, we may still need processor for additional formatting
-        # Using a combination of explicit transform and processor's formatting
         inputs = processor(images=img, return_tensors="pt").to(device)
-        
         # Run inference
         with torch.no_grad():
             logits = model(**inputs).logits
@@ -210,15 +191,14 @@ async def predict_image(file: UploadFile = File(...)):
 
         # Standardize label output
         prediction_label = "AI" if label.lower() == "ai" else "Human"
-
         logger.info(f"Prediction made: {prediction_label} with confidence {conf:.2f}%")
-        # Save the actual image file to the correct blob container
         save_image_to_blob(contents, file.filename, prediction_label)
 
         return ImageResponse(
             prediction=prediction_label,
             confidence=round(conf, 2)
         )
+        
     except Exception as e:
         logger.error(f"Image prediction error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error during image prediction: {e}")
