@@ -1,146 +1,82 @@
-name: Text Model Retraining & Deployment
+name: Retrain‑Text‑Model
 
 on:
   schedule:
-    - cron: "0 0 * * 0"  # Run weekly at midnight on Sunday
-  workflow_dispatch:     # Allow manual triggering
+    - cron: "0 0 * * 0"   # weekly Sunday midnight
+  workflow_dispatch:
 
 env:
-  PYTHON_VERSION: "3.10"
+  PYTHON_VERSION: "3.11"
+  MODEL_BLOB: "model.pt"
+  SHADOW_BLOB: "shadow_model.pt"
   MODELS_CONTAINER: "fakenewsdetection-models"
   CSV_CONTAINER: "fakenewsdetection-csv"
-  TETXT_MODEL_BLOB: "model.pt"
   CSV_BLOB: "user_data.csv"
-  MLFLOW_TRACKING_URI: "file:retraining/mlflow-text/mlruns"
 
 jobs:
-  run-tests:
+  train-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install mlflow azure-storage-blob torch transformers pandas numpy scikit-learn pytest
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install torch==2.6.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
+            transformers pandas scikit-learn numpy fastapi uvicorn pydantic \
+            azure-storage-blob python-dotenv mlflow tqdm unittest
 
-      - name: Run unit tests
-        run: |
-          python -m pytest tests/text_tests/unit_tests.py -v
+    - name: Download production weights & user CSV
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python - <<'PY'
+        import os, pathlib
+        from azure.storage.blob import BlobServiceClient
+        conn = os.environ['AZURE_STORAGE_CONNECTION_STRING']
+        svc  = BlobServiceClient.from_connection_string(conn)
+        containers = {
+            'model': (os.getenv('MODELS_CONTAINER', 'fakenewsdetection-models'), os.getenv('MODEL_BLOB', 'shadow_model.pt'), 'text_model/model.pt'),
+            'csv':   (os.getenv('CSV_CONTAINER', 'fakenewsdetection-csv'),      os.getenv('CSV_BLOB',  'user_data.csv'),      'datasets/text_data/user_data.csv')
+        }
+        for key,(cont,blob_name,dst_path) in containers.items():
+            dst = pathlib.Path(dst_path); dst.parent.mkdir(parents=True, exist_ok=True)
+            blob = svc.get_container_client(cont).get_blob_client(blob_name)
+            with open(dst,'wb') as f: f.write(blob.download_blob().readall())
+        PY
 
-      - name: Run integration tests
-        env:
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-        run: |
-          python -m pytest tests/text_tests/integration_tests.py -v
+    - name: Unit tests
+      run: python -m unittest tests.text_tests.unit_tests
 
-  retrain-model:
-    needs: run-tests
-    if: success()  # Only run if all tests pass
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+    - name: Integration tests
+      run: python -m unittest tests.text_tests.integration_tests
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+    - name: Retrain model (creates shadow blob)
+      id: retrain
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python -m retraining.text_retrain
+    
+    - name: Commit archived user data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name  "GitHub Action"
+        git add datasets/text_data/archives/.
+        git commit -m "Archive user text data [CI skip]" || echo "Nothing to commit"
+        git push
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install mlflow azure-storage-blob torch transformers pandas numpy scikit-learn
-
-
-      - name: Download current model 
-        run: |
-          az storage blob download \
-            --container-name $MODELS_CONTAINER \
-            --name $TEXT_MODEL_BLOB \
-            --file text_model/model.pt \
-            --connection-string ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-
-      - name: Download user CSV
-        run: |
-          az storage blob download \
-            --container-name $CSV_CONTAINER \
-            --name $CSV_BLOB \
-            --file datasets/text_data/user_data.csv \
-            --connection-string ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-
-      - name: Run retraining script
-        id: retrain
-        env:
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-          MLFLOW_ARTIFACT_URI: ${{ env.MLFLOW_ARTIFACT_URI }}
-        run: |
-          python retraining/text_retrain.py
-          echo "retrain_success=$?" >> $GITHUB_OUTPUT
-
-      - name: Commit MLflow results and archived user data
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add retraining/mlflow-text/
-          git add datasets/text_data/archives/
-          git commit -m "Update MLflow text folder and archived user data"
-          git push
-        
-        
-  deploy-model:
-    needs: retrain-model
-    if: ${{ needs.retrain-model.outputs.retrain_success == 0 }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Azure Container Registry
-        uses: azure/docker-login@v1
-        with:
-          login-server: ${{ secrets.REGISTRY_LOGIN_SERVER }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: text_model
-          push: true
-          tags: ${{ secrets.REGISTRY_LOGIN_SERVER }}/text-model:latest
-          cache-from: type=registry,ref=${{ secrets.REGISTRY_LOGIN_SERVER }}/text-model:buildcache
-          cache-to: type=registry,ref=${{ secrets.REGISTRY_LOGIN_SERVER }}/text-model:buildcache,mode=max
-
-      - name: Notify on success
-        uses: actions/github-script@v6
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: "Model Retraining and Deployment Successful",
-              body: "The automated model retraining process completed successfully and the new model has been deployed."
-            })
-
-  notify-failure:
-    needs: [run-tests, retrain-model]
-    if: failure()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v6
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: "Model Retraining Failed",
-              body: "The automated model retraining process failed. Please check the logs."
-            }) 
+    - name: Switch live service to shadow
+      if: steps.retrain.outcome == 'success'
+      run: |
+        curl -sSL -X POST "$GATEWAY/admin/text/role" \
+          -H "Content-Type: application/json" \
+          -H "x-token: ${{ secrets.ADMIN_TOKEN }}" \
+          --data '{"role":"shadow"}'
+      env:
+        GATEWAY: ${{ secrets.GATEWAY_URL }} 

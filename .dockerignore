@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.env/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+coverage.xml
+*.cover
+
+# git
+.git/
+.gitignore
+
+# OS / Editor junk files
+.DS_Store
+Thumbs.db
+*.log
+
+# Dockerfiles themselves – the build context already has them
+*Dockerfile 

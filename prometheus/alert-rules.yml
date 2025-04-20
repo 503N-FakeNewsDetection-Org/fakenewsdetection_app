@@ -1,0 +1,45 @@
+groups:
+- name: latency_and_failure
+  rules:
+
+  # ─── LATENCY ALERTS ─────────────────────────────────────────────
+  - alert: GatewayHighLatency
+    expr: histogram_quantile(0.95,
+            sum(rate(http_request_latency_seconds_bucket{job="gateway"}[5m])) by (le,job))
+          > 1  
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Gateway p95 latency > 1s for 10m"
+
+  - alert: TextModelHighLatency
+    expr: histogram_quantile(0.95,
+            sum(rate(model_latency_seconds_bucket{job="text"}[5m])) by (le,job))
+          > 2   
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Text model p95 latency > 2s for 10m"
+
+  - alert: ImageModelHighLatency
+    expr: histogram_quantile(0.95,
+            sum(rate(model_latency_seconds_bucket{job="image"}[5m])) by (le,job))
+          > 3   
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Image model p95 latency > 3s for 10m"
+
+  # ─── FAILURE‑RATE ALERT ────────────────────────────────────────
+  - alert: GatewayHighErrorRate
+    expr: |
+      rate(http_requests_failed[5m]) /
+      rate(http_requests_total[5m]) > 0.05
+    for: 10m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Gateway error rate > 5% for 10 minutes"

@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  text-service:
+    build:
+      context: ../text_model
+      dockerfile: Dockerfile
+    networks: [inference]
+    env_file:
+      - ../.env
+
+  image-service:
+    build:
+      context: ../image_model
+      dockerfile: Dockerfile
+    networks: [inference]
+    env_file:
+      - ../.env
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: main/Dockerfile
+    ports:
+      - "8000:80"            # <‑‑ only public port
+      - "9101:9101"          # Prometheus metrics if scraping from host
+    depends_on:
+      - text-service
+      - image-service
+    networks: [inference]
+    env_file:
+      - ../.env
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=7d'
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prom_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [inference]
+
+networks:
+  inference:
+    driver: bridge
+
+volumes:
+  prom_data:

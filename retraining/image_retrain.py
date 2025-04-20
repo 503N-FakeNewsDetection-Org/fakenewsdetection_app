@@ -49,7 +49,7 @@ mlflow.set_tracking_uri(MLFLOW_IMAGE_TRACKING_URI)
 # Azure
 CONNECTION_STRING   = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 MODELS_CONTAINER    = os.getenv("MODELS_CONTAINER", "fakenewsdetection-models")
-IMAGE_MODEL_BLOB    = os.getenv("IMAGE_MODEL_BLOB", "image.pt")
+IMAGE_MODEL_BLOB    = os.getenv("IMAGE_MODEL_BLOB", "shadow_image.pt")
 AI_IMAGE_CONTAINER  = os.getenv("AI_IMAGE_CONTAINER", "fakenewsdetection-ai-imgs")
 HUMAN_IMAGE_CONTAINER = os.getenv("HUMAN_IMAGE_CONTAINER","fakenewsdetection-hum-imgs")
 
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 logger.info(f"Using device: {device}")
 if DRY_RUN:
-    logger.info("** DRY‑RUN mode enabled **  — no files, no Azure, no MLflow")
+    logger.info("** DRY‑RUN mode enabled **  — no files, no Azure, no MLflow")
 
 # ──────────────────────────────────────────────────────────────────────
 # 1.  Dataset with unified preprocessing
@@ -217,7 +217,7 @@ def reset_user_data() -> bool:
         archive_user_data()
 
         if not CONNECTION_STRING:
-            logger.warning("No Azure connection string – skipping cloud cleanup")
+            logger.warning("No Azure connection string – skipping cloud cleanup")
             return True
 
         blob_service = BlobServiceClient.from_connection_string(CONNECTION_STRING)
@@ -284,6 +284,12 @@ def retrain() -> bool:
                                                stratify=tmp_l,random_state=42)
 
         model, proc, _ = load_model_and_processor(); model.to(device)
+        if os.path.exists(MODEL_PATH):
+            try:
+                model.load_state_dict(torch.load(MODEL_PATH, map_location=device), strict=False)
+                logger.info("Loaded existing production weights for continued training")
+            except Exception as e:
+                logger.warning(f"Failed to load existing weights ({e}); starting from scratch")
         aug = transforms.RandomHorizontalFlip()
         train_ds = ImageDataset(tr_p,tr_l,proc,aug)
         val_ds   = ImageDataset(va_p,va_l,proc)
@@ -331,7 +337,7 @@ def retrain() -> bool:
                     mlflow.log_artifact(tf.name, artifact_path="models/promoted")
                 os.unlink(tf.name)
         else:
-            logger.info("Thresholds not met – no promotion")
+            logger.info("Thresholds not met – no promotion")
 
         if mlflow_active: mlflow.end_run()
         return promoted
