@@ -1,26 +1,20 @@
-# Use Python 3.10 slim image
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Set working directory
+# Optional: change if you have a private PyPI mirror
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy source code first (for layer caching)
+COPY . ./text_model/
 
-# Copy application files
-COPY model.pt .
-COPY app.py .
+# Install minimal system deps
+RUN apt-get update && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
+# Install Python deps
+RUN pip install --upgrade pip && pip install -r text_model/requirements.txt
 
-# Expose port
-EXPOSE 8000
-
-# Set environment variables
-ENV HOST=0.0.0.0 PORT=8000
-
-# Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Expose nothing – internal container
+ENV PORT=8001
+CMD ["uvicorn", "text_model.app:app", "--host", "0.0.0.0", "--port", "8001"]

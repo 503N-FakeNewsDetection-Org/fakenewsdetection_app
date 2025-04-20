@@ -1,0 +1,66 @@
+# ─── .github/workflows/image_evaluate.yml ────────────────────────────────
+name: Promote Image Shadow Model
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron:  '30 0 * * 1'    # every hour, change as you like
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PROM_URL:  ${{ secrets.PROM_URL }}
+      AZ_CONN:   ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      CONTAINER: fakenewsdetection-models
+      SHADOW_BLOB: shadow_image.pt
+      PROD_BLOB:   image.pt
+      SERVICE:     image           # label inside Prometheus
+
+    steps:
+    - name: Install python deps
+      run: pip install --quiet requests azure-storage-blob
+
+    - name: Evaluate metrics & promote if OK
+      run: |
+        python - <<'PY'
+        import os, sys, requests, json
+        from azure.storage.blob import BlobServiceClient, ResourceNotFoundError
+        prom   = os.environ["PROM_URL"].rstrip("/")
+        svc    = BlobServiceClient.from_connection_string(os.environ["AZ_CONN"]).get_container_client(os.environ["CONTAINER"])
+        service= os.environ["SERVICE"]
+
+        def q(expr):
+            r = requests.get(f"{prom}/api/v1/query", params={"query": expr}, timeout=30)
+            r.raise_for_status()
+            res = r.json()["data"]["result"]
+            return 0 if not res else float(res[0]["value"][1])
+
+        prod   = q(f'model_inferences_total{{role="prod"}}')
+        shadow = q('shadow_inferences_total')
+        agree  = q('shadow_agree_total')
+
+        print(f"prod={prod}  shadow={shadow}  agree={agree}")
+        if prod == 0 or shadow == 0:
+            print("No traffic yet – skipping"); sys.exit(0)
+
+        counts_ok   = abs(prod - shadow) / prod <= 0.02     # ≤2 % diff
+        agreement   = agree / shadow if shadow else 0
+        agreement_ok= agreement >= 0.85
+
+        print(f"counts_ok={counts_ok}  agreement={agreement:.2%}  agreement_ok={agreement_ok}")
+
+        shadow_blob = os.environ["SHADOW_BLOB"]
+        prod_blob   = os.environ["PROD_BLOB"]
+
+        if counts_ok and agreement_ok:
+            print("PROMOTING shadow model → production blob")
+            data = svc.download_blob(shadow_blob).readall()
+            svc.upload_blob(prod_blob, data, overwrite=True)
+        else:
+            print("Deleting shadow blob (did not meet criteria)")
+            try: svc.delete_blob(shadow_blob)
+            except ResourceNotFoundError: pass
+        PY

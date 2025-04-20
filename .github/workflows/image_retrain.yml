@@ -1,0 +1,93 @@
+name: Retrain‑Image‑Model
+
+on:
+  schedule:
+    - cron: "30 0 * * 0"   # weekly Sunday 00:30
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  MODEL_BLOB: "image.pt"
+  SHADOW_BLOB: "shadow_image.pt"
+  MODELS_CONTAINER: "fakenewsdetection-models"
+  AI_IMAGE_CONTAINER: "fakenewsdetection-ai-imgs"
+  HUMAN_IMAGE_CONTAINER: "fakenewsdetection-hum-imgs"
+
+jobs:
+  train-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch==2.6.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
+            torchvision transformers pillow pandas numpy scikit-learn fastapi uvicorn pydantic \
+            azure-storage-blob python-dotenv mlflow tqdm unittest
+
+    - name: Download production weights
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python - <<'PY'
+        import os, pathlib, glob
+        from azure.storage.blob import BlobServiceClient
+        conn = os.environ['AZURE_STORAGE_CONNECTION_STRING']
+        svc  = BlobServiceClient.from_connection_string(conn)
+        # model weight
+        model_container = os.getenv('MODELS_CONTAINER','fakenewsdetection-models')
+        blob_name       = os.getenv('MODEL_BLOB','shadow_image.pt')
+        dst = pathlib.Path('image_model/image.pt'); dst.parent.mkdir(parents=True, exist_ok=True)
+        blob = svc.get_container_client(model_container).get_blob_client(blob_name)
+        with open(dst,'wb') as f: f.write(blob.download_blob().readall())
+        # user images (ai & human)
+        mappings = {
+            os.getenv('AI_IMAGE_CONTAINER','fakenewsdetection-ai-imgs'): 'datasets/image_data/ai_user',
+            os.getenv('HUMAN_IMAGE_CONTAINER','fakenewsdetection-hum-imgs'): 'datasets/image_data/hum_user'
+        }
+        for cont,path in mappings.items():
+            local_dir = pathlib.Path(path); local_dir.mkdir(parents=True, exist_ok=True)
+            container_client = svc.get_container_client(cont)
+            for blob in container_client.list_blobs():
+                blob_path = local_dir / blob.name
+                blob_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(blob_path,'wb') as f:
+                    f.write(container_client.get_blob_client(blob).download_blob().readall())
+        PY
+
+    - name: Unit tests
+      run: python -m unittest tests.image_tests.unit_tests 
+
+    - name: Integration tests
+      run: python -m unittest tests.image_tests.integration_tests
+
+    - name: Retrain model (creates shadow blob)
+      id: retrain
+      env:
+        AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+      run: |
+        python -m retraining.image_retrain
+
+    - name: Commit archived user data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name  "GitHub Action"
+        git add datasets/image_data/archives/.
+        git commit -m "Archive user image data [CI skip]" || echo "Nothing to commit"
+        git push
+
+    - name: Switch live service to shadow
+      if: steps.retrain.outcome == 'success'
+      run: |
+        curl -sSL -X POST "$GATEWAY/admin/image/role" \
+          -H "Content-Type: application/json" \
+          -H "x-token: ${{ secrets.ADMIN_TOKEN }}" \
+          --data '{"role":"shadow"}'
+      env:
+        GATEWAY: ${{ secrets.GATEWAY_URL }} 

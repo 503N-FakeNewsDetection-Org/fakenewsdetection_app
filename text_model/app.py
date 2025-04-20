@@ -1,218 +1,198 @@
-import os
+import os, tempfile, logging, time
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Header
 from pydantic import BaseModel, field_validator
-import torch
-import torch.nn as nn
-from transformers import BertTokenizerFast, AutoModel
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
-import tempfile
-import logging
-import pandas as pd
+import torch, torch.nn as nn
+from transformers import AutoModel, BertTokenizerFast
+from azure.storage.blob import BlobServiceClient
+from prometheus_client import Counter, Histogram, start_http_server
 
-# Load environment variables from .env file
+# ╭──────────────── Config ───────────────╮
 load_dotenv()
+AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+CONTAINER   = "fakenewsdetection-models"
+PROD_BLOB   = "model.pt"
+SHAD_BLOB   = "shadow_model.pt"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")            
+MAX_LEN     = 15
+device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ╰────────────────────────────────────────╯
 
-# Set up logging with timestamps
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+log = logging.getLogger(__name__)
 
-# Azure Blob Storage configuration
-CONNECTION_STRING = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-MODELS_CONTAINER = "fakenewsdetection-models"
-CSV_CONTAINER = "fakenewsdetection-csv"
-MODEL_BLOB = "model.pt"
-CSV_BLOB = "user_data.csv"
+# Start Prometheus exporter on port 9103 for this container
+start_http_server(9103)
 
-# Constants
-MAX_LENGTH = 15  # Same as in training code
+# Production & latency metrics (labelled by CURRENT_ROLE)
+PROD_INF   = Counter("model_inferences_total", "Total model inferences", ["role"])
+LATENCY    = Histogram("model_latency_seconds", "Inference latency", ["role"])
+# Shadow‑specific global counters (no labels)
+SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", [])
+SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", [])
 
-# Set device (GPU if available, else CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logger.info(f"Using device: {device}")
+tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
 
-# Define the text model architecture
+# ╭──────────────── Model skeleton ─────────╮
 class BERT_Arch(nn.Module):
     def __init__(self, bert):
-        super(BERT_Arch, self).__init__()
-        self.bert = bert
-        self.dropout = nn.Dropout(0.1)
-        self.relu = nn.ReLU()
-        self.fc1 = nn.Linear(768, 512)
-        self.fc2 = nn.Linear(512, 2)
-        self.softmax = nn.LogSoftmax(dim=1)
-    
+        super().__init__()
+        self.bert      = bert
+        self.dropout   = nn.Dropout(0.1)
+        self.relu      = nn.ReLU()
+        self.fc1       = nn.Linear(768, 512)
+        self.fc2       = nn.Linear(512, 2)
+        self.logsoft   = nn.LogSoftmax(dim=1)
+
     def forward(self, sent_id, mask):
-        cls_hs = self.bert(sent_id, attention_mask=mask)['pooler_output']
-        x = self.fc1(cls_hs)
-        x = self.relu(x)
-        x = self.dropout(x)
-        x = self.fc2(x)
-        x = self.softmax(x)
-        return x
+        # exactly as in your notebook
+        cls_hs = self.bert(sent_id, attention_mask=mask)["pooler_output"]
+        x      = self.fc1(cls_hs)
+        x      = self.relu(x)
+        x      = self.dropout(x)
+        x      = self.fc2(x)
+        return self.logsoft(x)
+# ╰──────────────────────────────────────────╯
 
-# Create router instance for text detection
-# Using empty prefix since the main_app will mount this with the /text prefix
+#
+# Globals that change when we /admin/role or /admin/reload
+#
+CURRENT_ROLE   = "prod"      # "prod" | "shadow"
+primary_model  = None        # answers returned to user
+secondary_model= None        # only for comparison
+
+def download_blob(blob_name):
+    try:
+        svc  = BlobServiceClient.from_connection_string(AZ_CONN)
+        blob = svc.get_container_client(CONTAINER).get_blob_client(blob_name)
+        with tempfile.NamedTemporaryFile(delete=False) as t:
+            blob.download_blob().readinto(t)
+            return torch.load(t.name, map_location=device)
+    except Exception as e:
+        log.warning(f"download {blob_name}: {e}")
+        return None
+
+def load_weights(role: str):
+    """(Re)load models according to desired role."""
+    global primary_model, secondary_model, CURRENT_ROLE
+    CURRENT_ROLE = role
+    bert = AutoModel.from_pretrained("bert-base-uncased")
+
+    prod_sd  = download_blob(PROD_BLOB)
+    if prod_sd is None:
+        raise RuntimeError("prod blob missing")
+
+    if role == "prod":
+        prim = BERT_Arch(bert); prim.load_state_dict(prod_sd, strict=False)
+        primary_model, secondary_model = prim.to(device).eval(), None
+
+    else:  # shadow mode requires both blobs
+        shadow_sd = download_blob(SHAD_BLOB)
+        if shadow_sd is None:
+            raise RuntimeError("shadow blob missing for shadow role")
+        prim = BERT_Arch(bert); prim.load_state_dict(prod_sd,  strict=False)
+        sec  = BERT_Arch(bert); sec.load_state_dict(shadow_sd, strict=False)
+        primary_model, secondary_model = prim.to(device).eval(), sec.to(device).eval()
+
+    log.info(f"Loaded models – role={CURRENT_ROLE}  secondary={'yes' if secondary_model else 'none'}")
+
+# Initial load at startup
+load_weights("prod")
+
+# ╭────────────────── FastAPI  ───────────────╮
 router = APIRouter()
+admin  = APIRouter()
 
-# Global variables for model management
-model = None
-
-# Initialize tokenizer
-tokenizer = BertTokenizerFast.from_pretrained('bert-base-uncased')
-
-def load_model():
-    """Load model from local file or Azure Blob Storage"""
-    global model
-    try:
-        # Initialize model with BERT base
-        bert = AutoModel.from_pretrained('bert-base-uncased')
-        new_model = BERT_Arch(bert)
-        
-        # First try to load model from local file
-        local_model_path = os.path.join(os.path.dirname(__file__), "model.pt")
-        if os.path.exists(local_model_path):
-            logger.info(f"Found local model at {local_model_path}")
-            new_model.load_state_dict(torch.load(local_model_path, map_location=device), strict=False)
-            new_model = new_model.to(device)
-            new_model.eval()
-            model = new_model
-            logger.info("Model loaded successfully from local file")
-            return
-        
-        logger.info("No local model found, downloading from Azure...")
-        # Create BlobServiceClient
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        container_client = blob_service_client.get_container_client(MODELS_CONTAINER)
-        blob_client = container_client.get_blob_client(MODEL_BLOB)
-        
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            # Download blob to temp file
-            download_stream = blob_client.download_blob()
-            download_stream.readinto(temp_file)
-            
-            # Load model from temp file
-            new_model.load_state_dict(torch.load(temp_file.name, map_location=device), strict=False)
-            os.unlink(temp_file.name)
-        
-        # Move model to appropriate device
-        new_model = new_model.to(device)
-        new_model.eval()
-        model = new_model
-        logger.info("Model loaded successfully from Azure")
-            
-    except Exception as e:
-        logger.error(f"Error loading model: {e}")
-        raise HTTPException(status_code=500, detail="Model not loaded")
-
-def save_user_input(text: str, prediction: str):
-    """Save user input and prediction to Azure Blob Storage"""
-    try:
-        # Create DataFrame with new input
-        new_data = pd.DataFrame({
-            'title': [text],
-            'label': [1 if prediction == "Fake" else 0]  # Convert prediction to label
-        })
-        
-        # Create BlobServiceClient
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        container_client = blob_service_client.get_container_client(CSV_CONTAINER)
-        blob_client = container_client.get_blob_client(CSV_BLOB)
-        
-        try:
-            # Try to download existing data
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                download_stream = blob_client.download_blob()
-                download_stream.readinto(temp_file)
-                existing_data = pd.read_csv(temp_file.name)
-                os.unlink(temp_file.name)
-                
-                # Check if the text already exists
-                if text not in existing_data['title'].values:
-                    # Append new data
-                    combined_data = pd.concat([existing_data, new_data], ignore_index=True)
-                    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                        combined_data.to_csv(temp_file.name, index=False)
-                        with open(temp_file.name, "rb") as data:
-                            blob_client.upload_blob(data, overwrite=True)
-                        os.unlink(temp_file.name)
-                        logger.info(f"New input saved to Azure Blob Storage")
-                else:
-                    logger.info("Input already exists in user_data.csv")
-        except Exception as e:
-            # If file doesn't exist or error reading, create new file
-            logger.warning(f"Error reading existing file: {e}. Creating new file.")
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                new_data.to_csv(temp_file.name, index=False)
-                with open(temp_file.name, "rb") as data:
-                    blob_client.upload_blob(data, overwrite=True)
-                os.unlink(temp_file.name)
-                logger.info("Created new user_data.csv in Azure Blob Storage")
-            
-    except Exception as e:
-        logger.error(f"Error saving user input: {e}")
-        # Don't raise the error, just log it
-
-# Define request and response models
-class TextRequest(BaseModel):
+class Req(BaseModel):
     text: str
-    
-    @field_validator('text')
-    def validate_text(cls, v):
-        if not v.strip():
-            raise ValueError("Text cannot be empty")
+    @field_validator("text")
+    def _not_empty(cls, v): 
+        if not v.strip(): raise ValueError("Empty")
         return v.strip()
 
-class TextResponse(BaseModel):
+class Resp(BaseModel):
     prediction: str
     confidence: float
     raw_prediction: int
 
-# Text detection endpoint
-@router.post("/text", response_model=TextResponse)
-def predict_text(request: TextRequest):
-    if model is None:
-        load_model()
-    
-    try:
-        # Tokenize input text
-        tokens = tokenizer.batch_encode_plus(
-            [request.text],
-            max_length=MAX_LENGTH,
-            padding='max_length',
-            truncation=True,
-            return_tensors="pt"
-        )
-        input_ids = tokens['input_ids']
-        attention_mask = tokens['attention_mask']
-        
-        # Move tensors to the same device as the model
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
-        
-        with torch.no_grad():
-            outputs = model(input_ids, attention_mask)
-            # Convert log probabilities to probabilities
-            probabilities = torch.exp(outputs)
-            # Get the prediction and its probability
-            prediction = torch.argmax(probabilities, dim=1).item()
-            # Get the probability of the predicted class
-            confidence = probabilities[0][prediction].item()
-        
-        label = "Fake" if prediction == 1 else "Real"
-        logger.info(f"Prediction made: {label} with confidence {confidence:.2f}")
-        save_user_input(request.text, label)
-        return TextResponse(
-            prediction=label,
-            confidence=round(confidence * 100, 2),
-            raw_prediction=prediction
-        )
-    except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/text", response_model=Resp)
+def predict(req: Req):
+    if primary_model is None:
+        raise HTTPException(503,"Model not loaded")
 
-# Initialize model on startup
-load_model() 
+    toks = tokenizer.batch_encode_plus(
+        [req.text], max_length=MAX_LEN,
+        padding="max_length", truncation=True, return_tensors="pt")
+    ids, mask = toks['input_ids'].to(device), toks['attention_mask'].to(device)
+
+    with torch.no_grad():
+        start_t = time.perf_counter()
+        out   = primary_model(ids, mask)
+        latency = time.perf_counter() - start_t
+        probs = torch.exp(out)[0]
+        idx   = int(probs.argmax())
+        conf  = float(probs[idx])*100
+    label = "Fake" if idx==1 else "Real"
+    PROD_INF.labels(CURRENT_ROLE).inc()
+    LATENCY.labels(CURRENT_ROLE).observe(latency)
+
+    # secondary compare
+    if secondary_model:
+        with torch.no_grad():
+            s_idx = int(torch.argmax(torch.exp(secondary_model(ids, mask)),1).item())
+        # shadow statistics
+        SH_INF.inc()
+        if s_idx == idx:
+            SH_MATCH.inc()
+
+    # Save user input to Azure Blob if new
+    try:
+        blob_client = BlobServiceClient.from_connection_string(AZ_CONN) \
+            .get_container_client("fakenewsdetection-csv") \
+            .get_blob_client("user_data.csv")
+        try:
+            existing = blob_client.download_blob().readall().decode('utf-8')
+        except Exception:
+            existing = ""
+        lines = existing.splitlines()
+        if req.text not in lines:
+            lines.append(req.text)
+            data = "\n".join(lines) + "\n"
+            blob_client.upload_blob(data.encode('utf-8'), overwrite=True)
+    except Exception as e:
+        log.error(f"upload user text: {e}")
+    return Resp(prediction=label, confidence=round(conf,2), raw_prediction=idx)
+
+# ───── Admin endpoints (token‑protected) ─────
+def check_admin(token: str | None):
+    if ADMIN_TOKEN and token != ADMIN_TOKEN:
+        raise HTTPException(401,"bad token")
+
+class RoleReq(BaseModel):
+    role: str # "prod" | "shadow"
+
+@admin.post("/admin/role")
+def set_role(r: RoleReq, x_token: str | None = Header(None)):
+    check_admin(x_token)
+    load_weights(r.role)
+    return {"status":"ok","role":CURRENT_ROLE}
+
+@admin.post("/admin/reload")
+def reload_weights(x_token: str | None = Header(None)):
+    check_admin(x_token)
+    load_weights(CURRENT_ROLE)
+    return {"status":"reloaded","role":CURRENT_ROLE}
+
+@admin.get("/admin/status")
+def status(x_token: str | None = Header(None)):
+    check_admin(x_token)
+    return {
+        "role": CURRENT_ROLE,
+        "secondary": bool(secondary_model)
+    }
+
+# ─────────────────────────────────────────────
+app = FastAPI(title="FakeNews‑Text‑API")
+app.include_router(router, tags=["text"])
+app.include_router(admin,  tags=["admin"])

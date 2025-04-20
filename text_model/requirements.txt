@@ -1,12 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi==0.115.12
 uvicorn==0.34.0
 pydantic==2.10.3
-torch==2.6.0
+torch==2.6.0+cpu
 transformers==4.51.3
 azure-storage-blob==12.25.1
 python-dotenv==1.0.1
-pandas==1.5.3
-numpy==1.26.4
-
-
-
+prometheus-client==0.14.1
+hf_xet

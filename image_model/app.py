@@ -1,208 +1,165 @@
-import os
-import io
-import hashlib
+import os, io, tempfile, logging, hashlib, time
 from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, Header
 from pydantic import BaseModel
 import torch
 from transformers import SiglipConfig, SiglipForImageClassification, AutoImageProcessor
 from PIL import Image
 from azure.storage.blob import BlobServiceClient
-import tempfile
-import logging
-from torchvision import transforms
+from azure.core.exceptions import ResourceExistsError
+from prometheus_client import Counter, Histogram, start_http_server
 
-# Load environment variables from .env file (assuming it's in the root)
+# ╭──────────────── Config ───────────────╮
 load_dotenv()
+AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+CONTAINER   = "fakenewsdetection-models"
+PROD_BLOB   = "image.pt"
+SHAD_BLOB   = "shadow_image.pt"
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# ╰────────────────────────────────────────╯
 
-# Set up logging with timestamps
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+log = logging.getLogger(__name__)
 
-# Azure Blob Storage configuration
-CONNECTION_STRING = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
-MODELS_CONTAINER = "fakenewsdetection-models"
-IMAGE_MODEL_BLOB = "image.pt"  # Blob name for the image model weights
+# Start Prometheus exporter on port 9103
+start_http_server(9103)
 
-# Define target containers for saving images
-AI_IMAGE_CONTAINER = os.getenv("AI_IMAGE_CONTAINER", "fakenewsdetection-ai-imgs")
-HUMAN_IMAGE_CONTAINER = os.getenv("HUMAN_IMAGE_CONTAINER", "fakenewsdetection-hum-imgs")
+# Prod metrics per role
+PROD_INF   = Counter("model_inferences_total", "Total model inferences", ["role"])
+LATENCY    = Histogram("model_latency_seconds", "Inference latency", ["role"])
+SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", [])
+SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", [])
 
-# Set device (GPU if available, else CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logger.info(f"Using device: {device}")
+#
+# Globals
+#
+CURRENT_ROLE    = "prod"
+primary_model   = None
+secondary_model = None
+processor       = None
 
-# Create router instance for image detection
-# Using empty prefix since the main_app will mount this with the /image prefix
+def download_blob(name):
+    try:
+        blob = BlobServiceClient.from_connection_string(AZ_CONN)\
+               .get_container_client(CONTAINER).get_blob_client(name)
+        with tempfile.NamedTemporaryFile(delete=False) as t:
+            blob.download_blob().readinto(t)
+            return torch.load(t.name, map_location=device)
+    except Exception as e:
+        log.warning(f"download {name}: {e}")
+        return None
+
+def load_weights(role: str):
+    global CURRENT_ROLE, primary_model, secondary_model, processor
+    CURRENT_ROLE = role
+    cfg = SiglipConfig.from_pretrained("Ateeqq/ai-vs-human-image-detector")
+    proc= AutoImageProcessor.from_pretrained("Ateeqq/ai-vs-human-image-detector")
+    processor = proc
+
+    prod_sd  = download_blob(PROD_BLOB)
+    shad_sd  = download_blob(SHAD_BLOB)
+
+    if role == "prod":
+        if prod_sd is None:
+            raise RuntimeError("prod blob missing")
+        prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd, strict=False)
+        primary_model = prim.to(device).eval()
+        if shad_sd:
+            sec = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
+            secondary_model = sec.to(device).eval()
+        else:
+            secondary_model = None
+    else:  # shadow role
+        if shad_sd is None or prod_sd is None:
+            raise RuntimeError("need both blobs for shadow role")
+        prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd,  strict=False)
+        sec  = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
+        primary_model   = prim.to(device).eval()
+        secondary_model = sec.to(device).eval()
+
+    log.info(f"Loaded models – role={CURRENT_ROLE}  secondary={'yes' if secondary_model else 'none'}")
+
+load_weights("prod")
+
+# ╭────────────────── FastAPI ───────────────╮
 router = APIRouter()
+admin  = APIRouter()
 
-# Global variables for model and processor management
-model = None
-processor = None
-model_config = None
-transform = None
+class Resp(BaseModel):
+    prediction: str
+    confidence: float
 
-def load_image_model():
-    """Load image model from local file or Azure Blob Storage"""
-    global model, processor, model_config, transform
+@router.post("/image", response_model=Resp)
+async def predict(file: UploadFile = File(...)):
+    if primary_model is None or processor is None:
+        raise HTTPException(503,"Model not ready")
+    img_bytes = await file.read()
     try:
-        # 1. Load the model config & processor
-        config = SiglipConfig.from_pretrained("Ateeqq/ai-vs-human-image-detector")
-        image_processor = AutoImageProcessor.from_pretrained("Ateeqq/ai-vs-human-image-detector")
-        
-        # 2. Instantiate the model (no weights yet)
-        new_model = SiglipForImageClassification(config)
-        
-        # 3. Set up image transformation pipeline (matching fine-tuning approach)
-        transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-        ])
-        
-        # 4. Try to load weights from local file first
-        local_model_path = os.path.join(os.path.dirname(__file__), "image.pt")
-        if os.path.exists(local_model_path):
-            logger.info(f"Found local image model weights at {local_model_path}")
-            state_dict = torch.load(local_model_path, map_location=device)
-            new_model.load_state_dict(state_dict)
-            new_model = new_model.to(device)
-            new_model.eval()
-            model = new_model
-            processor = image_processor
-            model_config = config
-            logger.info("Image model loaded successfully from local file")
-            return
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception:
+        raise HTTPException(400,"Bad image")
 
-        logger.info("No local image model weights found, downloading from Azure...")
-        # 5. Download from Azure if local file not found
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-        container_client = blob_service_client.get_container_client(MODELS_CONTAINER)
-        blob_client = container_client.get_blob_client(IMAGE_MODEL_BLOB) # Use image model blob name
+    inputs = processor(images=img, return_tensors="pt").to(device)
+    with torch.no_grad():
+        start_t = time.perf_counter()
+        logits = primary_model(**inputs).logits
+        latency = time.perf_counter() - start_t
+        probs  = torch.softmax(logits, dim=-1)[0]
+        idx    = int(probs.argmax())
+        conf   = float(probs[idx])*100
+        label  = primary_model.config.id2label[idx]
+    PROD_INF.labels(CURRENT_ROLE).inc()
+    LATENCY.labels(CURRENT_ROLE).observe(latency)
 
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            # Download blob to temp file
-            logger.info(f"Downloading {IMAGE_MODEL_BLOB} from Azure container {MODELS_CONTAINER}...")
-            download_stream = blob_client.download_blob()
-            download_stream.readinto(temp_file)
-            
-            # Load state dict from temp file
-            state_dict = torch.load(temp_file.name, map_location=device)
-            new_model.load_state_dict(state_dict)
-            os.unlink(temp_file.name)
-            logger.info("Downloaded and loaded state dict from Azure.")
-
-        # Move model to appropriate device
-        new_model = new_model.to(device)
-        new_model.eval()
-        model = new_model
-        processor = image_processor
-        model_config = config
-        logger.info("Image model loaded successfully from Azure")
-
-    except Exception as e:
-        logger.error(f"Error loading image model: {e}")
-        # Allow the app to start, but log the error. Prediction endpoint will fail.
-        model = None
-        processor = None
-        model_config = None
-        transform = None
-        # raise HTTPException(status_code=500, detail="Image model could not be loaded") # Optional: block startup
-
-# New function to save image bytes to the appropriate container
-def save_image_to_blob(image_bytes: bytes, filename: str, prediction: str):
-    """Saves unique image bytes to Azure Blob Storage based on prediction, using SHA256 hash as blob name."""
-    if not CONNECTION_STRING:
-        logger.warning("Azure connection string not configured. Skipping image file saving.")
-        return
-    try:
-        # Determine target container
-        if prediction == "AI":
-            target_container = AI_IMAGE_CONTAINER
-        elif prediction == "Human":
-            target_container = HUMAN_IMAGE_CONTAINER
-        else:
-            logger.warning(f"Unknown prediction '{prediction}', cannot save image.")
-            return
-
-        image_hash = hashlib.sha256(image_bytes).hexdigest()
-        blob_name = image_hash
-        metadata = {"original_filename": filename}
-        blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
-
-        try:
-            container_client = blob_service_client.get_container_client(target_container)
-            # Check if container exists by trying to get properties
-            container_client.get_container_properties()
-        except Exception as container_error:
-
-            logger.info(f"Container '{target_container}' not found or error accessing: {container_error}. Attempting to create it.")
-            try:
-                 container_client = blob_service_client.create_container(target_container)
-            except Exception as creation_error:
-                 logger.error(f"Failed to create container '{target_container}': {creation_error}")
-                 return # Cannot proceed without container
-
-        blob_client = container_client.get_blob_client(blob_name)
-        if blob_client.exists():
-            logger.info(f"Duplicate image detected (Hash: {image_hash}). Skipping upload to '{target_container}'. Original filename: '{filename}'")
-            return
-        else:
-            # Upload the image if it doesn't exist
-            logger.info(f"Uploading new image (Hash: {image_hash}) as '{blob_name}' to container '{target_container}'. Original filename: '{filename}'")
-            blob_client.upload_blob(image_bytes, metadata=metadata)
-            logger.info(f"Image successfully uploaded.")
-
-    except Exception as e:
-        logger.error(f"Error saving image file to blob storage: {e}", exc_info=True)
-
-
-class ImageResponse(BaseModel):
-    prediction: str # "AI" or "Human"
-    confidence: float # Percentage
-
-# Image detection endpoint
-@router.post("/image", response_model=ImageResponse)
-async def predict_image(file: UploadFile = File(...)):
-    if model is None or processor is None or model_config is None or transform is None:
-        logger.error("Image model not loaded properly.")
-        raise HTTPException(status_code=503, detail="Image model is not available")
-
-    try:
-        # Read image contents
-        contents = await file.read()
-        # Open image using PIL
-        try:
-            img = Image.open(io.BytesIO(contents)).convert("RGB")
-        except Exception as img_err:
-            logger.error(f"Error opening image: {img_err}")
-            raise HTTPException(status_code=400, detail="Invalid image file")
-        
-        inputs = processor(images=img, return_tensors="pt").to(device)
-        # Run inference
+    if secondary_model:
         with torch.no_grad():
-            logits = model(**inputs).logits
-            probs  = torch.softmax(logits, dim=-1)[0]
-            idx    = int(probs.argmax())
-            label  = model_config.id2label[idx] # Get label from config ("ai", "human")
-            conf   = float(probs[idx] * 100)
+            s_idx = int(torch.argmax(secondary_model(**inputs).logits,1).item())
+        SH_INF.inc()
+        if s_idx == idx:
+            SH_MATCH.inc()
 
-        # Standardize label output
-        prediction_label = "AI" if label.lower() == "ai" else "Human"
-        logger.info(f"Prediction made: {prediction_label} with confidence {conf:.2f}%")
-        save_image_to_blob(contents, file.filename, prediction_label)
-
-        return ImageResponse(
-            prediction=prediction_label,
-            confidence=round(conf, 2)
-        )
-        
+    out = "AI" if label.lower()=="ai" else "Human"
+    # Save user image to Azure Blob with unique hash filename and metadata
+    try:
+        img_hash = hashlib.sha256(img_bytes).hexdigest()
+        ext = os.path.splitext(file.filename)[1] or ".jpg"
+        container = "fakenewsdetection-ai-imgs" if out == "AI" else "fakenewsdetection-hum-imgs"
+        blob_client = BlobServiceClient.from_connection_string(AZ_CONN) \
+            .get_container_client(container) \
+            .get_blob_client(f"{img_hash}{ext}")
+        metadata = {"filename": file.filename}
+        blob_client.upload_blob(img_bytes, overwrite=False, metadata=metadata)
+    except ResourceExistsError:
+        log.info(f"image already exists in blob: {img_hash}{ext}")
     except Exception as e:
-        logger.error(f"Image prediction error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error during image prediction: {e}")
+        log.error(f"upload user image: {e}")
+    return Resp(prediction=out, confidence=round(conf,2))
 
+# ───── Admin
+def chk(token): 
+    if ADMIN_TOKEN and token != ADMIN_TOKEN:
+        raise HTTPException(401,"bad token")
 
-# Initialize model on startup 
-load_image_model()
+class RoleReq(BaseModel):
+    role: str
+
+@admin.post("/admin/role")
+def set_role(r: RoleReq, x_token: str | None = Header(None)):
+    chk(x_token); load_weights(r.role)
+    return {"role":CURRENT_ROLE}
+
+@admin.post("/admin/reload")
+def reload(x_token: str | None = Header(None)):
+    chk(x_token); load_weights(CURRENT_ROLE)
+    return {"role":CURRENT_ROLE,"status":"reloaded"}
+
+@admin.get("/admin/status")
+def stat(x_token: str | None = Header(None)):
+    chk(x_token)
+    return {"role":CURRENT_ROLE,"secondary":bool(secondary_model)}
+
+app = FastAPI(title="FakeNews‑Image‑API")
+app.include_router(router, tags=["image"])
+app.include_router(admin,  tags=["admin"])

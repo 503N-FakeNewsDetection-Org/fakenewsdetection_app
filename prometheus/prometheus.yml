@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Load alert rules from external file
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
+scrape_configs:
+  # Prometheus self‑scrape
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Gateway HTTP metrics
+  - job_name: gateway
+    static_configs:
+      - targets: ['gateway:9101']
+
+  # Text model metrics
+  - job_name: text
+    static_configs:
+      - targets: ['text-service:9103']
+
+  # Image model metrics
+  - job_name: image
+    static_configs:
+      - targets: ['image-service:9103'] 
