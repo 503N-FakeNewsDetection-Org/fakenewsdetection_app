@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Home – FakeNews Detector</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+        <h1>Welcome, {{ user }}!</h1>
+        <nav><a href="/logout">Logout</a></nav>
+    </header>
+
+    <section class="actions">
+      <h2>What would you like to do?</h2>
+      <button onclick="location.href='/text-form'">Analyse Text</button>
+      <button onclick="location.href='/image-form'">Analyse Image</button>
+    </section>
+  </div>
+</body>
+</html> 

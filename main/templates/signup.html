@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sign Up – FakeNews Detector</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Sign Up</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post">
+        <label>Username
+            <input type="text" name="username" required>
+        </label>
+        <label>Password
+            <input type="password" name="password" required>
+        </label>
+        <button type="submit">Create Account</button>
+    </form>
+    <p>Have an account? <a href="/login">Log in</a></p>
+  </div>
+</body>
+</html> 

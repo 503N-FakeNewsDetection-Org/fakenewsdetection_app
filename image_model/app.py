@@ -5,7 +5,7 @@ from pydantic import BaseModel
 import torch
 from transformers import SiglipConfig, SiglipForImageClassification, AutoImageProcessor
 from PIL import Image
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, StorageStreamDownloader
 from azure.core.exceptions import ResourceExistsError
 from prometheus_client import Counter, Histogram, start_http_server
 
@@ -29,8 +29,8 @@ start_http_server(9103)
 # Prod metrics per role
 PROD_INF   = Counter("model_inferences_total", "Total model inferences", ["role"])
 LATENCY    = Histogram("model_latency_seconds", "Inference latency", ["role"])
-SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", [])
-SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", [])
+SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", ["service"])
+SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", ["service"])
 
 #
 # Globals
@@ -40,12 +40,13 @@ primary_model   = None
 secondary_model = None
 processor       = None
 
-def download_blob(name):
+def download_blob(name, timeout=300):
     try:
         blob = BlobServiceClient.from_connection_string(AZ_CONN)\
                .get_container_client(CONTAINER).get_blob_client(name)
+        stream: StorageStreamDownloader = blob.download_blob(max_concurrency=4, timeout=timeout)
         with tempfile.NamedTemporaryFile(delete=False) as t:
-            blob.download_blob().readinto(t)
+            stream.readinto(t)
             return torch.load(t.name, map_location=device)
     except Exception as e:
         log.warning(f"download {name}: {e}")
@@ -58,22 +59,24 @@ def load_weights(role: str):
     proc= AutoImageProcessor.from_pretrained("Ateeqq/ai-vs-human-image-detector")
     processor = proc
 
-    prod_sd  = download_blob(PROD_BLOB)
-    shad_sd  = download_blob(SHAD_BLOB)
+    # keep retrying until we successfully download the production blob
+    while True:
+        prod_sd = download_blob(PROD_BLOB)
+        if prod_sd is not None:
+            break
+        log.warning(f"prod blob missing for role={role}, retrying in 5 seconds")
+        time.sleep(5)
 
     if role == "prod":
-        if prod_sd is None:
-            raise RuntimeError("prod blob missing")
+        # production mode: only load prod model, no shadow
         prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd, strict=False)
         primary_model = prim.to(device).eval()
-        if shad_sd:
-            sec = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
-            secondary_model = sec.to(device).eval()
-        else:
-            secondary_model = None
+        secondary_model = None
     else:  # shadow role
-        if shad_sd is None or prod_sd is None:
-            raise RuntimeError("need both blobs for shadow role")
+        # shadow mode: download and load shadow blob
+        shad_sd = download_blob(SHAD_BLOB)
+        if shad_sd is None:
+            raise RuntimeError("shadow blob missing for shadow role")
         prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd,  strict=False)
         sec  = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
         primary_model   = prim.to(device).eval()
@@ -116,9 +119,9 @@ async def predict(file: UploadFile = File(...)):
     if secondary_model:
         with torch.no_grad():
             s_idx = int(torch.argmax(secondary_model(**inputs).logits,1).item())
-        SH_INF.inc()
+        SH_INF.labels("image").inc()
         if s_idx == idx:
-            SH_MATCH.inc()
+            SH_MATCH.labels("image").inc()
 
     out = "AI" if label.lower()=="ai" else "Human"
     # Save user image to Azure Blob with unique hash filename and metadata
@@ -129,7 +132,7 @@ async def predict(file: UploadFile = File(...)):
         blob_client = BlobServiceClient.from_connection_string(AZ_CONN) \
             .get_container_client(container) \
             .get_blob_client(f"{img_hash}{ext}")
-        metadata = {"filename": file.filename}
+        metadata = out
         blob_client.upload_blob(img_bytes, overwrite=False, metadata=metadata)
     except ResourceExistsError:
         log.info(f"image already exists in blob: {img_hash}{ext}")

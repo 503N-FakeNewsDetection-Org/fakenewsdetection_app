@@ -12,6 +12,8 @@ env:
   MODELS_CONTAINER: "fakenewsdetection-models"
   AI_IMAGE_CONTAINER: "fakenewsdetection-ai-imgs"
   HUMAN_IMAGE_CONTAINER: "fakenewsdetection-hum-imgs"
+  IMAGE_ACCURACY_THRESHOLD: "0.10"
+  IMAGE_F1_THRESHOLD: "0.10"
 
 jobs:
   train-deploy:

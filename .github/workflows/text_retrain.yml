@@ -12,6 +12,8 @@ env:
   MODELS_CONTAINER: "fakenewsdetection-models"
   CSV_CONTAINER: "fakenewsdetection-csv"
   CSV_BLOB: "user_data.csv"
+  TEXT_ACCURACY_THRESHOLD: "0.10"
+  TEXT_F1_THRESHOLD: "0.10"
 
 jobs:
   train-deploy:

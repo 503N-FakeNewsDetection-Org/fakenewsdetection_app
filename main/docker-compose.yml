@@ -33,10 +33,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.52.0
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro

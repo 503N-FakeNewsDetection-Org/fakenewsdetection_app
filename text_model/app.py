@@ -4,8 +4,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, Header
 from pydantic import BaseModel, field_validator
 import torch, torch.nn as nn
 from transformers import AutoModel, BertTokenizerFast
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, StorageStreamDownloader
 from prometheus_client import Counter, Histogram, start_http_server
+import csv, io
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
@@ -29,8 +30,8 @@ start_http_server(9103)
 PROD_INF   = Counter("model_inferences_total", "Total model inferences", ["role"])
 LATENCY    = Histogram("model_latency_seconds", "Inference latency", ["role"])
 # Shadow‑specific global counters (no labels)
-SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", [])
-SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", [])
+SH_INF     = Counter("shadow_inferences_total", "Shadow inferences", ["service"])
+SH_MATCH   = Counter("shadow_agree_total", "Shadow agrees with prod", ["service"])
 
 tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
 
@@ -62,12 +63,13 @@ CURRENT_ROLE   = "prod"      # "prod" | "shadow"
 primary_model  = None        # answers returned to user
 secondary_model= None        # only for comparison
 
-def download_blob(blob_name):
+def download_blob(blob_name, timeout=300):
     try:
         svc  = BlobServiceClient.from_connection_string(AZ_CONN)
         blob = svc.get_container_client(CONTAINER).get_blob_client(blob_name)
+        stream: StorageStreamDownloader = blob.download_blob(max_concurrency=4, timeout=timeout)
         with tempfile.NamedTemporaryFile(delete=False) as t:
-            blob.download_blob().readinto(t)
+            stream.readinto(t)
             return torch.load(t.name, map_location=device)
     except Exception as e:
         log.warning(f"download {blob_name}: {e}")
@@ -79,9 +81,13 @@ def load_weights(role: str):
     CURRENT_ROLE = role
     bert = AutoModel.from_pretrained("bert-base-uncased")
 
-    prod_sd  = download_blob(PROD_BLOB)
-    if prod_sd is None:
-        raise RuntimeError("prod blob missing")
+    # keep retrying until we successfully download the production blob
+    while True:
+        prod_sd = download_blob(PROD_BLOB)
+        if prod_sd is not None:
+            break
+        log.warning(f"prod blob missing for role={role}, retrying in 10 seconds")
+        time.sleep(10)
 
     if role == "prod":
         prim = BERT_Arch(bert); prim.load_state_dict(prod_sd, strict=False)
@@ -142,9 +148,9 @@ def predict(req: Req):
         with torch.no_grad():
             s_idx = int(torch.argmax(torch.exp(secondary_model(ids, mask)),1).item())
         # shadow statistics
-        SH_INF.inc()
+        SH_INF.labels("text").inc()
         if s_idx == idx:
-            SH_MATCH.inc()
+            SH_MATCH.labels("text").inc()
 
     # Save user input to Azure Blob if new
     try:
@@ -152,14 +158,23 @@ def predict(req: Req):
             .get_container_client("fakenewsdetection-csv") \
             .get_blob_client("user_data.csv")
         try:
-            existing = blob_client.download_blob().readall().decode('utf-8')
+            existing = blob_client.download_blob().readall().decode("utf-8")
         except Exception:
             existing = ""
-        lines = existing.splitlines()
-        if req.text not in lines:
-            lines.append(req.text)
-            data = "\n".join(lines) + "\n"
-            blob_client.upload_blob(data.encode('utf-8'), overwrite=True)
+
+        # Parse existing CSV into list of rows
+        rows = []
+        if existing:
+            reader = csv.reader(io.StringIO(existing))
+            rows = [row for row in reader]
+
+        # Check for duplicate text in first column
+        if not any(row and row[0] == req.text for row in rows):
+            rows.append([req.text, idx])
+            out_buf = io.StringIO()
+            writer = csv.writer(out_buf, lineterminator="\n")
+            writer.writerows(rows)
+            blob_client.upload_blob(out_buf.getvalue().encode("utf-8"), overwrite=True)
     except Exception as e:
         log.error(f"upload user text: {e}")
     return Resp(prediction=label, confidence=round(conf,2), raw_prediction=idx)
