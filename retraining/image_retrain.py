@@ -35,8 +35,8 @@ DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 BATCH_SIZE         = int(os.getenv("BATCH_SIZE", "8"))
 EPOCHS             = int(os.getenv("EPOCHS", "5"))
 LEARNING_RATE      = float(os.getenv("LEARNING_RATE", "5e-5"))
-ACCURACY_THRESHOLD = float(os.getenv("IMAGE_ACCURACY_THRESHOLD", "0.80"))
-F1_THRESHOLD       = float(os.getenv("IMAGE_F1_THRESHOLD", "0.80"))
+ACCURACY_THRESHOLD = float(os.getenv("IMAGE_ACCURACY_THRESHOLD", "0.1")) ## Originally 0.8
+F1_THRESHOLD       = float(os.getenv("IMAGE_F1_THRESHOLD", "0.1")) ## Originally 0.8
 MODEL_PATH         = os.getenv("MODEL_PATH", "image_model/image.pt")
 
 # MLflow

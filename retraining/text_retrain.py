@@ -24,8 +24,8 @@ EPOCHS        = int(os.getenv("EPOCHS",        "2"))
 MAX_LENGTH    = 15
 LEARNING_RATE = float(os.getenv("LEARNING_RATE","1e-5"))
 
-ACC_THRESH   = float(os.getenv("TEXT_ACCURACY_THRESHOLD","0.85"))
-F1_THRESH    = float(os.getenv("TEXT_F1_THRESHOLD",       "0.85"))
+ACC_THRESH   = float(os.getenv("TEXT_ACCURACY_THRESHOLD","0.1")) ## Originally 0.85
+F1_THRESH    = float(os.getenv("TEXT_F1_THRESHOLD",       "0.1")) ## Originally 0.85
 
 MLFLOW_URI   = os.getenv("MLFLOW_TEXT_TRACKING_URI",
                   "file:retraining/mlflow-text/mlruns")

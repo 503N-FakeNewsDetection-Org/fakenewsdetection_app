@@ -1,21 +1,21 @@
 import os, io, tempfile, logging, hashlib, time
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, Header
+from fastapi import APIRouter, FastAPI, HTTPException, UploadFile, File, Header, Form
 from pydantic import BaseModel
 import torch
 from transformers import SiglipConfig, SiglipForImageClassification, AutoImageProcessor
 from PIL import Image
 from azure.storage.blob import BlobServiceClient
-from azure.core.exceptions import ResourceExistsError
 from prometheus_client import Counter, Histogram, start_http_server
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
-AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZ_CONN     = "DefaultEndpointsProtocol=https;AccountName=modelscsv;AccountKey=hC/W3DHx3nxkNHhbJCiOBRICi56Cy/htx2lWQoI6LRO8hT5mKWVKIoIlEmHte6oLE6003sBGTalp+AStL5lznw==;EndpointSuffix=core.windows.net"
 CONTAINER   = "fakenewsdetection-models"
 PROD_BLOB   = "image.pt"
 SHAD_BLOB   = "shadow_image.pt"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+#LOCAL_WEIGHTS_DIR = os.getenv("WEIGHTS_DIR", os.path.dirname(__file__))
+ADMIN_TOKEN = "admin@123"
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ╰────────────────────────────────────────╯
 
@@ -23,8 +23,8 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger(__name__)
 
-# Start Prometheus exporter on port 9103
-start_http_server(9103)
+# Start Prometheus exporter on port 9104
+start_http_server(9104)
 
 # Prod metrics per role
 PROD_INF   = Counter("model_inferences_total", "Total model inferences", ["role"])
@@ -50,6 +50,19 @@ def download_blob(name):
     except Exception as e:
         log.warning(f"download {name}: {e}")
         return None
+    
+
+'''
+def _load_local(blob_name):
+    path = os.path.join(LOCAL_WEIGHTS_DIR, blob_name)
+    if os.path.isfile(path):
+        try:
+            return torch.load(path, map_location=device)
+        except Exception as e:
+            log.warning(f"local load {blob_name}: {e}")
+    return None
+'''
+
 
 def load_weights(role: str):
     global CURRENT_ROLE, primary_model, secondary_model, processor
@@ -59,25 +72,23 @@ def load_weights(role: str):
     processor = proc
 
     prod_sd  = download_blob(PROD_BLOB)
-    shad_sd  = download_blob(SHAD_BLOB)
+    # Ensure we have prod_sd, with retry loop similar to earlier logic
+    while prod_sd is None:
+        log.warning("prod blob missing, retrying in 10 seconds")
+        time.sleep(10)
+        prod_sd = download_blob(PROD_BLOB)
 
     if role == "prod":
-        if prod_sd is None:
-            raise RuntimeError("prod blob missing")
         prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd, strict=False)
         primary_model = prim.to(device).eval()
-        if shad_sd:
-            sec = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
-            secondary_model = sec.to(device).eval()
-        else:
-            secondary_model = None
-    else:  # shadow role
-        if shad_sd is None or prod_sd is None:
-            raise RuntimeError("need both blobs for shadow role")
-        prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd,  strict=False)
+        secondary_model = None
+    else:
+        shad_sd =  download_blob(SHAD_BLOB)
+        if shad_sd is None:
+            raise RuntimeError("shadow blob missing for shadow role")
+        prim = SiglipForImageClassification(cfg); prim.load_state_dict(prod_sd, strict=False)
         sec  = SiglipForImageClassification(cfg); sec.load_state_dict(shad_sd, strict=False)
-        primary_model   = prim.to(device).eval()
-        secondary_model = sec.to(device).eval()
+        primary_model, secondary_model = prim.to(device).eval(), sec.to(device).eval()
 
     log.info(f"Loaded models – role={CURRENT_ROLE}  secondary={'yes' if secondary_model else 'none'}")
 
@@ -121,21 +132,31 @@ async def predict(file: UploadFile = File(...)):
             SH_MATCH.inc()
 
     out = "AI" if label.lower()=="ai" else "Human"
-    # Save user image to Azure Blob with unique hash filename and metadata
+    return Resp(prediction=out, confidence=round(conf,2))
+
+# ---------- Feedback endpoint ----------
+class FeedbackResp(BaseModel):
+    status: str
+
+@router.post("/feedback/image", response_model=FeedbackResp)
+async def feedback_image(file: UploadFile = File(...), label: int = Form(...)):
+    """Save user‑verified image with metadata if unique."""
+    img_bytes = await file.read()
+    img_hash = hashlib.sha256(img_bytes).hexdigest()
+    ext = os.path.splitext(file.filename)[1] or ".jpg"
+    container = "fakenewsdetection-ai-imgs" if label == 1 else "fakenewsdetection-hum-imgs"
     try:
-        img_hash = hashlib.sha256(img_bytes).hexdigest()
-        ext = os.path.splitext(file.filename)[1] or ".jpg"
-        container = "fakenewsdetection-ai-imgs" if out == "AI" else "fakenewsdetection-hum-imgs"
         blob_client = BlobServiceClient.from_connection_string(AZ_CONN) \
             .get_container_client(container) \
             .get_blob_client(f"{img_hash}{ext}")
-        metadata = {"filename": file.filename}
-        blob_client.upload_blob(img_bytes, overwrite=False, metadata=metadata)
-    except ResourceExistsError:
-        log.info(f"image already exists in blob: {img_hash}{ext}")
+        if not blob_client.exists():
+            metadata = {"feedback": str(label), "filename": file.filename}
+            blob_client.upload_blob(img_bytes, overwrite=False, metadata=metadata)
+        else:
+            log.info("duplicate feedback image ignored")
     except Exception as e:
-        log.error(f"upload user image: {e}")
-    return Resp(prediction=out, confidence=round(conf,2))
+        log.error(f"feedback upload image: {e}")
+    return {"status":"ok"}
 
 # ───── Admin
 def chk(token): 
@@ -162,4 +183,3 @@ def stat(x_token: str | None = Header(None)):
 
 app = FastAPI(title="FakeNews‑Image‑API")
 app.include_router(router, tags=["image"])
-app.include_router(admin,  tags=["admin"])

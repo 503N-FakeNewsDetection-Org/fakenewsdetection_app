@@ -2,11 +2,6 @@ model.pt
 __pycache__
 .env
 user_data.csv
-best_model.pt
 image.pt
-
-img.py
-test.py
-weight.py
-maybe.py
+users.json
 

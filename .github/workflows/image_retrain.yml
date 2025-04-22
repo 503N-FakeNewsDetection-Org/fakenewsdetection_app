@@ -7,11 +7,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  MODEL_BLOB: "image.pt"
-  SHADOW_BLOB: "shadow_image.pt"
-  MODELS_CONTAINER: "fakenewsdetection-models"
-  AI_IMAGE_CONTAINER: "fakenewsdetection-ai-imgs"
-  HUMAN_IMAGE_CONTAINER: "fakenewsdetection-hum-imgs"
 
 jobs:
   train-deploy:
@@ -42,7 +37,7 @@ jobs:
         svc  = BlobServiceClient.from_connection_string(conn)
         # model weight
         model_container = os.getenv('MODELS_CONTAINER','fakenewsdetection-models')
-        blob_name       = os.getenv('MODEL_BLOB','shadow_image.pt')
+        blob_name       = os.getenv('MODEL_BLOB','image.pt')
         dst = pathlib.Path('image_model/image.pt'); dst.parent.mkdir(parents=True, exist_ok=True)
         blob = svc.get_container_client(model_container).get_blob_client(blob_name)
         with open(dst,'wb') as f: f.write(blob.download_blob().readall())

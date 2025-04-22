@@ -9,11 +9,13 @@ from prometheus_client import Counter, Histogram, start_http_server
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
-AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZ_CONN     = "DefaultEndpointsProtocol=https;AccountName=modelscsv;AccountKey=hC/W3DHx3nxkNHhbJCiOBRICi56Cy/htx2lWQoI6LRO8hT5mKWVKIoIlEmHte6oLE6003sBGTalp+AStL5lznw==;EndpointSuffix=core.windows.net"
 CONTAINER   = "fakenewsdetection-models"
 PROD_BLOB   = "model.pt"
 SHAD_BLOB   = "shadow_model.pt"
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")            
+# path where local .pt files may reside
+#LOCAL_WEIGHTS_DIR = os.getenv("WEIGHTS_DIR", os.path.dirname(__file__))
+ADMIN_TOKEN = "admin@123"            
 MAX_LEN     = 15
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ╰────────────────────────────────────────╯
@@ -62,6 +64,18 @@ CURRENT_ROLE   = "prod"      # "prod" | "shadow"
 primary_model  = None        # answers returned to user
 secondary_model= None        # only for comparison
 
+'''
+def _load_local(blob_name):
+    "Return state‑dict from local file if present else None."
+    path = os.path.join(LOCAL_WEIGHTS_DIR, blob_name)
+    if os.path.isfile(path):
+        try:
+            return torch.load(path, map_location=device)
+        except Exception as e:
+            log.warning(f"local load {blob_name}: {e}")
+    return None
+'''
+
 def download_blob(blob_name):
     try:
         svc  = BlobServiceClient.from_connection_string(AZ_CONN)
@@ -80,8 +94,10 @@ def load_weights(role: str):
     bert = AutoModel.from_pretrained("bert-base-uncased")
 
     prod_sd  = download_blob(PROD_BLOB)
-    if prod_sd is None:
-        raise RuntimeError("prod blob missing")
+    while prod_sd is None:
+        log.warning("prod blob missing, retrying in 10 seconds")
+        time.sleep(10)
+        prod_sd = download_blob(PROD_BLOB)
 
     if role == "prod":
         prim = BERT_Arch(bert); prim.load_state_dict(prod_sd, strict=False)
@@ -114,7 +130,11 @@ class Req(BaseModel):
 class Resp(BaseModel):
     prediction: str
     confidence: float
-    raw_prediction: int
+
+# Feedback schema from gateway
+class FeedbackReq(BaseModel):
+    text: str
+    label: int  # 0=real 1=fake
 
 @router.post("/text", response_model=Resp)
 def predict(req: Req):
@@ -146,7 +166,11 @@ def predict(req: Req):
         if s_idx == idx:
             SH_MATCH.inc()
 
-    # Save user input to Azure Blob if new
+    return Resp(prediction=label, confidence=round(conf,2))
+
+@router.post("/feedback/text")
+def feedback_text(feed: FeedbackReq):
+    """Append verified text to Azure CSV if not already present."""
     try:
         blob_client = BlobServiceClient.from_connection_string(AZ_CONN) \
             .get_container_client("fakenewsdetection-csv") \
@@ -156,13 +180,24 @@ def predict(req: Req):
         except Exception:
             existing = ""
         lines = existing.splitlines()
-        if req.text not in lines:
-            lines.append(req.text)
-            data = "\n".join(lines) + "\n"
-            blob_client.upload_blob(data.encode('utf-8'), overwrite=True)
+        updated = False
+        for i,l in enumerate(lines):
+            if not l.strip():
+                continue
+            parts = l.split(',')
+            if feed.text == parts[0]:
+                # update label
+                parts[1:] = [str(feed.label)]
+                lines[i] = ','.join(parts)
+                updated = True
+                break
+        if not updated:
+            lines.append(f"{feed.text.replace(',', ' ')},{feed.label}")
+        data = "\n".join(lines) + "\n"
+        blob_client.upload_blob(data.encode('utf-8'), overwrite=True)
     except Exception as e:
-        log.error(f"upload user text: {e}")
-    return Resp(prediction=label, confidence=round(conf,2), raw_prediction=idx)
+        log.error(f"feedback upload: {e}")
+    return {"status":"ok"}
 
 # ───── Admin endpoints (token‑protected) ─────
 def check_admin(token: str | None):
