@@ -9,13 +9,13 @@ from prometheus_client import Counter, Histogram, start_http_server
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
-AZ_CONN     = "DefaultEndpointsProtocol=https;AccountName=modelscsv;AccountKey=hC/W3DHx3nxkNHhbJCiOBRICi56Cy/htx2lWQoI6LRO8hT5mKWVKIoIlEmHte6oLE6003sBGTalp+AStL5lznw==;EndpointSuffix=core.windows.net"
+AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 CONTAINER   = "fakenewsdetection-models"
 PROD_BLOB   = "model.pt"
 SHAD_BLOB   = "shadow_model.pt"
 # path where local .pt files may reside
 #LOCAL_WEIGHTS_DIR = os.getenv("WEIGHTS_DIR", os.path.dirname(__file__))
-ADMIN_TOKEN = "admin@123"            
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")            
 MAX_LEN     = 15
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ╰────────────────────────────────────────╯
