@@ -16,30 +16,30 @@ groups:
   - alert: TextModelHighLatency
     expr: histogram_quantile(0.95,
             sum(rate(model_latency_seconds_bucket{job="text"}[5m])) by (le,job))
-          > 2   
+          > 5   
     for: 10m
     labels:
       severity: warning
     annotations:
-      summary: "Text model p95 latency > 2s for 10m"
+      summary: "Text model p95 latency > 5s for 10m"
 
   - alert: ImageModelHighLatency
     expr: histogram_quantile(0.95,
             sum(rate(model_latency_seconds_bucket{job="image"}[5m])) by (le,job))
-          > 3   
+          > 5   
     for: 10m
     labels:
       severity: warning
     annotations:
-      summary: "Image model p95 latency > 3s for 10m"
+      summary: "Image model p95 latency > 5s for 10m"
 
   # ─── FAILURE‑RATE ALERT ────────────────────────────────────────
   - alert: GatewayHighErrorRate
     expr: |
       rate(http_requests_failed[5m]) /
-      rate(http_requests_total[5m]) > 0.05
+      rate(http_requests_total[5m]) > 0.1
     for: 10m
     labels:
       severity: critical
     annotations:
-      summary: "Gateway error rate > 5% for 10 minutes"
+      summary: "Gateway error rate > 10% for 10 minutes"

@@ -7,4 +7,3 @@ transformers==4.51.3
 azure-storage-blob==12.25.1
 python-dotenv==1.0.1
 prometheus-client==0.14.1
-hf_xet

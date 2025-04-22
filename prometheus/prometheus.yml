@@ -14,15 +14,18 @@ scrape_configs:
 
   # Gateway HTTP metrics
   - job_name: gateway
+    metrics_path: /
     static_configs:
       - targets: ['gateway:9101']
 
   # Text model metrics
   - job_name: text
+    metrics_path: /
     static_configs:
       - targets: ['text-service:9103']
 
   # Image model metrics
   - job_name: image
+    metrics_path: /
     static_configs:
-      - targets: ['image-service:9103'] 
+      - targets: ['image-service:9104'] 

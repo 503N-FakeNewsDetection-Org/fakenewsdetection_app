@@ -8,6 +8,9 @@ services:
     networks: [inference]
     env_file:
       - ../.env
+    ports:
+      - "8001:80"
+      - "9103:9103"
 
   image-service:
     build:
@@ -16,11 +19,14 @@ services:
     networks: [inference]
     env_file:
       - ../.env
+    ports:
+      - "8002:80"
+      - "9104:9104"
 
   gateway:
     build:
-      context: ..
-      dockerfile: main/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8000:80"            # <‑‑ only public port
       - "9101:9101"          # Prometheus metrics if scraping from host
@@ -33,10 +39,6 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.52.0
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ../prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro

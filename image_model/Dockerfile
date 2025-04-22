@@ -5,11 +5,13 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
-COPY . ./image_model/
+COPY . .
 
 RUN apt-get update && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip && pip install -r image_model/requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
-ENV PORT=8002
-CMD ["uvicorn", "image_model.app:app", "--host", "0.0.0.0", "--port", "8002"]
+EXPOSE 80
+EXPOSE 9104
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]

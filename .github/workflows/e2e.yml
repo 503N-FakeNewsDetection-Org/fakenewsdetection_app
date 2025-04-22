@@ -1,0 +1,39 @@
+name: e2e
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs at the start of every hour
+    - cron: '0 * * * *'
+
+env:
+    GATEWAY: ${{ secrets.GATEWAY_URL }}
+    ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+
+jobs:
+  e2e_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check text service role endpoint
+        run: |
+          set -e
+          HTTP_STATUS=$(curl -sSL -o /dev/null \
+            -H "x-token: $ADMIN_TOKEN" \
+            "$GATEWAY/admin/text/role" \
+            -w "%{http_code}")
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Unexpected status code for text service: $HTTP_STATUS"
+            exit 1
+          fi
+
+      - name: Check image service role endpoint
+        run: |
+          set -e
+          HTTP_STATUS=$(curl -sSL -o /dev/null \
+            -H "x-token: $ADMIN_TOKEN" \
+            "$GATEWAY/admin/image/role" \
+            -w "%{http_code}")
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "Unexpected status code for image service: $HTTP_STATUS"
+            exit 1
+          fi

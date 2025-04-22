@@ -7,11 +7,6 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  MODEL_BLOB: "model.pt"
-  SHADOW_BLOB: "shadow_model.pt"
-  MODELS_CONTAINER: "fakenewsdetection-models"
-  CSV_CONTAINER: "fakenewsdetection-csv"
-  CSV_BLOB: "user_data.csv"
 
 jobs:
   train-deploy:
@@ -41,7 +36,7 @@ jobs:
         conn = os.environ['AZURE_STORAGE_CONNECTION_STRING']
         svc  = BlobServiceClient.from_connection_string(conn)
         containers = {
-            'model': (os.getenv('MODELS_CONTAINER', 'fakenewsdetection-models'), os.getenv('MODEL_BLOB', 'shadow_model.pt'), 'text_model/model.pt'),
+            'model': (os.getenv('MODELS_CONTAINER', 'fakenewsdetection-models'), os.getenv('MODEL_BLOB', 'model.pt'), 'text_model/model.pt'),
             'csv':   (os.getenv('CSV_CONTAINER', 'fakenewsdetection-csv'),      os.getenv('CSV_BLOB',  'user_data.csv'),      'datasets/text_data/user_data.csv')
         }
         for key,(cont,blob_name,dst_path) in containers.items():

@@ -1,5 +1,4 @@
-# ─── .github/workflows/text_evaluate.yml ─────────────────────────────────
-name: Promote Text Shadow Model
+name: Evaluate Text Shadow Model
 
 on:
   workflow_dispatch:
@@ -64,3 +63,12 @@ jobs:
             try: svc.delete_blob(shadow_blob)
             except ResourceNotFoundError: pass
         PY
+
+    - name: Switch live service back to prod
+      run: |
+        curl -sSL -X POST "$GATEWAY/admin/text/role" \
+            -H "Content-Type: application/json" \
+              -H "x-token: ${{ secrets.ADMIN_TOKEN }}" \
+              --data '{"role":"prod"}'
+      env:
+        GATEWAY: ${{ secrets.GATEWAY_URL }} 
