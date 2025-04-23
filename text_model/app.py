@@ -5,7 +5,8 @@ from pydantic import BaseModel, field_validator
 import torch, torch.nn as nn
 from transformers import AutoModel, BertTokenizerFast
 from azure.storage.blob import BlobServiceClient
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
@@ -226,6 +227,11 @@ def status(x_token: str | None = Header(None)):
         "role": CURRENT_ROLE,
         "secondary": bool(secondary_model)
     }
+
+@admin.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics on the API port."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ─────────────────────────────────────────────
 app = FastAPI(title="FakeNews‑Text‑API")

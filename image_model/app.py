@@ -6,7 +6,8 @@ import torch
 from transformers import SiglipConfig, SiglipForImageClassification, AutoImageProcessor
 from PIL import Image
 from azure.storage.blob import BlobServiceClient
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
@@ -181,5 +182,11 @@ def stat(x_token: str | None = Header(None)):
     chk(x_token)
     return {"role":CURRENT_ROLE,"secondary":bool(secondary_model)}
 
+@admin.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics on the API port."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 app = FastAPI(title="FakeNews‑Image‑API")
 app.include_router(router, tags=["image"])
+app.include_router(admin,  tags=["admin"])
