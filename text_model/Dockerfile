@@ -17,6 +17,5 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Expose nothing – internal container
 EXPOSE 80
-EXPOSE 9103
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]

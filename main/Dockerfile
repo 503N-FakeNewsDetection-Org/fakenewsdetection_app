@@ -12,6 +12,5 @@ RUN apt-get update && rm -rf /var/lib/apt/lists/* && \
     pip install --upgrade pip && pip install -r requirements.txt
 
 EXPOSE 80
-EXPOSE 9101
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "80"]
