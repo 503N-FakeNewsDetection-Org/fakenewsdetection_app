@@ -19,7 +19,7 @@ jobs:
           set -e
           HTTP_STATUS=$(curl -sSL -o /dev/null \
             -H "x-token: $ADMIN_TOKEN" \
-            "$GATEWAY/admin/text/role" \
+            "$GATEWAY/admin/text/status" \
             -w "%{http_code}")
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "Unexpected status code for text service: $HTTP_STATUS"
@@ -31,7 +31,7 @@ jobs:
           set -e
           HTTP_STATUS=$(curl -sSL -o /dev/null \
             -H "x-token: $ADMIN_TOKEN" \
-            "$GATEWAY/admin/image/role" \
+            "$GATEWAY/admin/image/status" \
             -w "%{http_code}")
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "Unexpected status code for image service: $HTTP_STATUS"
