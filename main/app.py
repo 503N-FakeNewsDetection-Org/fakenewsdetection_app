@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 import httpx
 from pydantic import BaseModel
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server, generate_latest, CONTENT_TYPE_LATEST
 import time
 import json, os, bcrypt
 import hashlib
@@ -244,5 +244,10 @@ async def _proxy_admin(method: str, url: str, data: dict | None, token: str | No
             raise HTTPException(status_code=503, detail=f"upstream admin error: {e}")
     if r.status_code >= 400:
         raise HTTPException(status_code=r.status_code, detail=r.text)
-    return r.json() 
+    return r.json()
+
+@app.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics on the main API port."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 

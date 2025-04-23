@@ -10,7 +10,6 @@ services:
       - ../.env
     ports:
       - "8001:80"
-      - "9103:9103"
 
   image-service:
     build:
@@ -21,15 +20,13 @@ services:
       - ../.env
     ports:
       - "8002:80"
-      - "9104:9104"
 
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:80"            # <‑‑ only public port
-      - "9101:9101"          # Prometheus metrics if scraping from host
+      - "8000:80"            # only public port
     depends_on:
       - text-service
       - image-service
@@ -37,7 +34,7 @@ services:
     env_file:
       - ../.env
 
-  prometheus:
+  prom:
     image: prom/prometheus:v2.52.0
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro

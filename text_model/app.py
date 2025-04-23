@@ -5,17 +5,18 @@ from pydantic import BaseModel, field_validator
 import torch, torch.nn as nn
 from transformers import AutoModel, BertTokenizerFast
 from azure.storage.blob import BlobServiceClient
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
-AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZ_CONN     = "DefaultEndpointsProtocol=https;AccountName=modelscsv;AccountKey=hC/W3DHx3nxkNHhbJCiOBRICi56Cy/htx2lWQoI6LRO8hT5mKWVKIoIlEmHte6oLE6003sBGTalp+AStL5lznw==;EndpointSuffix=core.windows.net"
 CONTAINER   = "fakenewsdetection-models"
 PROD_BLOB   = "model.pt"
 SHAD_BLOB   = "shadow_model.pt"
 # path where local .pt files may reside
 #LOCAL_WEIGHTS_DIR = os.getenv("WEIGHTS_DIR", os.path.dirname(__file__))
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")            
+ADMIN_TOKEN = "admin@123"            
 MAX_LEN     = 15
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ╰────────────────────────────────────────╯
@@ -226,6 +227,11 @@ def status(x_token: str | None = Header(None)):
         "role": CURRENT_ROLE,
         "secondary": bool(secondary_model)
     }
+
+@admin.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics on the API port."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ─────────────────────────────────────────────
 app = FastAPI(title="FakeNews‑Text‑API")

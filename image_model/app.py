@@ -6,16 +6,17 @@ import torch
 from transformers import SiglipConfig, SiglipForImageClassification, AutoImageProcessor
 from PIL import Image
 from azure.storage.blob import BlobServiceClient
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, start_http_server, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 # ╭──────────────── Config ───────────────╮
 load_dotenv()
-AZ_CONN     = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZ_CONN     = "DefaultEndpointsProtocol=https;AccountName=modelscsv;AccountKey=hC/W3DHx3nxkNHhbJCiOBRICi56Cy/htx2lWQoI6LRO8hT5mKWVKIoIlEmHte6oLE6003sBGTalp+AStL5lznw==;EndpointSuffix=core.windows.net"
 CONTAINER   = "fakenewsdetection-models"
 PROD_BLOB   = "image.pt"
 SHAD_BLOB   = "shadow_image.pt"
 #LOCAL_WEIGHTS_DIR = os.getenv("WEIGHTS_DIR", os.path.dirname(__file__))
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+ADMIN_TOKEN = "admin@123"
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ╰────────────────────────────────────────╯
 
@@ -181,5 +182,11 @@ def stat(x_token: str | None = Header(None)):
     chk(x_token)
     return {"role":CURRENT_ROLE,"secondary":bool(secondary_model)}
 
+@admin.get("/metrics")
+async def metrics():
+    """Expose Prometheus metrics on the API port."""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 app = FastAPI(title="FakeNews‑Image‑API")
 app.include_router(router, tags=["image"])
+app.include_router(admin,  tags=["admin"])
