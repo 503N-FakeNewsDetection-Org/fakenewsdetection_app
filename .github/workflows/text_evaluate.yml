@@ -39,8 +39,8 @@ jobs:
             return 0 if not res else float(res[0]["value"][1])
 
         prod   = q(f'model_inferences_total{{job="{service}", role="prod"}}')
-        shadow = q(f'shadow_inferences_total{{job="{service}", role="shadow"}}')
-        agree  = q(f'shadow_agree_total{{job="{service}", role="shadow"}}')
+        shadow = q(f'shadow_inferences_total{{job="{service}"}}')
+        agree  = q(f'shadow_agree_total{{job="{service}"}}')
 
         print(f"prod={prod}  shadow={shadow}  agree={agree}")
         if prod == 0 or shadow == 0:
