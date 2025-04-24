@@ -3,7 +3,8 @@
 ### Changes to allow for full testing:
 1. Both retraining scripts' **accuracy** and **f1** thressholds are set to 0.1, originally they are much higher. This is for testing purposes so the retraining workflow always promotes the shadow model weights.
 2. Upon performing the **first** retraining workflow for each model, the data on azure (data through user feedback, which I have populated right now so you can test it) will be **deleted**. In case you would like to test again, repopulate the containers by querying the actual application and choosing to give feedback. Make sure they are **enough** (at least 20 for the text model, at least 10 AI images and 10 human images for the image model) and that they are **UNIQUE** (Identical queries will not be saved!)
-3. In case of anything, kindly contact me since only I have access to my azure account.
+3. I have commented out the "on schedule" lines for all workflows for testing purposes. They are still ready to be manually triggered.
+4. In case of anything, kindly contact me since only I have access to my azure account.
 
 ## Project Overview
 This project is a Minimum Viable Product (MVP) designed to detect fake news using machine learning models. It includes both image and text models to analyze news content and determine its authenticity. The MVP status means that while the core functionality is present, there are areas for further development and optimization, such as security, data storage, and human intervention.
@@ -75,7 +76,7 @@ If you plan to dockerize and push to azure, skip downloading the weights entirel
 4. **Run the Service Locally**:
    Image/Text: Uncomment the _load_local() functions in both image and text app.py scripts, uncomment the LOCAL_WEIGHTS_DIR variable up top, replace "prod_sd  = download_blob(PROD_BLOB)" with "prod_sd  = _load_local(PROD_BLOB) or download_blob(PROD_BLOB)", add a uvicorn.run command at the bottom to execute the apps on localhost.
 
-   Main: Set <TEXT/IMAGE>_SERVICE_BASE = http://localhost:<port>, add a uvicorn.run command at the bottom to execute the main gui/proxy on localhost.
+   Main: Set <TEXT/IMAGE>_SERVICE_BASE = http://localhost:port, where the port is the one you defined, add a uvicorn.run command at the bottom to execute the main gui/proxy on localhost.
 
    Start the application using:
 
@@ -84,7 +85,7 @@ If you plan to dockerize and push to azure, skip downloading the weights entirel
    python image_model/app.py 
    python main/app.py
    ```
-   OR: Dockerize and run locally (from repo root):
+   OR: Dockerize and run locally (from repo root): (Don't forget to modify the Dockerfiles so they expose the correct port you defined, as well as the uvicorn CMD at the end):
    ```bash
    docker-compose -f main/docker-compose.yml up --build
    ```
@@ -112,12 +113,13 @@ Practically, use the already available application on azure.
    All workflows can be started manually from the **Actions** tab in GitHub via the "Run workflow" dropdown (enabled by the `workflow_dispatch` trigger). This allows ad‑hoc retraining, evaluation, or health checks without waiting for the next scheduled window.
    **NOTE THAT** we assume the base model is the ground truth, more reliably, we introduce a human-in-the-loop to monitor the data flow and manually test the shadow model on specific tests. This approach yields much higher confidence to promote/discard the shadow model.
 
-   ###Testing the CI/CD:
+###Testing the CI/CD:
    1. Just manually trigger the train workflow, send a query to the live apps, go over to the live prometheus URL (note that metrics on prometheus do not reset, by default they have a 15 day retention period), then query the metrics to verify the shadow model is up and running (shadow metrics begin with "shadow", production metrics begin with "model"). The workflow sends an authenticated POST request to the container, letting it know it is now in "shadow" mode.
    2. After that, run the evaluate script and watch it make the decision to promote or discard the shadow model. The workflow then sends a POST request to the container letting it know it is back in production mode, and it downloads the current production weights (shadow weights will replace production weights in case of promotion).
    3. Optionally, you are free to run the e2e.yml script at any time to check out the container's current mode. (Sends a GET request to both containers to query their STATUS).
 
    **NOTE THAT** as stated previously, the image model's original training data is not available for MVP purposes, while the text model's original training data is available in datasets/text_data/
+
    Do not forget the notes at the beginning of this README concerning data on azure!
 
 For any questions, I am available by my work email - mwj06@mail.aub.edu

@@ -1,8 +1,8 @@
 name: Retrain‑Text‑Model
 
 on:
-  schedule:
-    - cron: "0 0 * * 0"   # weekly Sunday midnight
+  #schedule:
+  #  - cron: "0 0 * * 0"   # weekly Sunday midnight
   workflow_dispatch:
 
 permissions:
