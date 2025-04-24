@@ -5,6 +5,9 @@ on:
     - cron: "0 0 * * 0"   # weekly Sunday midnight
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   PYTHON_VERSION: "3.11"
 
