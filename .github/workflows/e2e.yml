@@ -17,10 +17,10 @@ jobs:
       - name: Check text service role endpoint
         run: |
           set -e
-          HTTP_STATUS=$(curl -sSL -o /dev/null \
-            -H "x-token: $ADMIN_TOKEN" \
-            "$GATEWAY/admin/text/status" \
-            -w "%{http_code}")
+          RESPONSE=$(curl -sSL -H "x-token: $ADMIN_TOKEN" "$GATEWAY/admin/text/status" -w "\n%{http_code}")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          echo "Text service response: $BODY"
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "Unexpected status code for text service: $HTTP_STATUS"
             exit 1
@@ -29,10 +29,10 @@ jobs:
       - name: Check image service role endpoint
         run: |
           set -e
-          HTTP_STATUS=$(curl -sSL -o /dev/null \
-            -H "x-token: $ADMIN_TOKEN" \
-            "$GATEWAY/admin/image/status" \
-            -w "%{http_code}")
+          RESPONSE=$(curl -sSL -H "x-token: $ADMIN_TOKEN" "$GATEWAY/admin/image/status" -w "\n%{http_code}")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          echo "Image service response: $BODY"
           if [ "$HTTP_STATUS" -ne 200 ]; then
             echo "Unexpected status code for image service: $HTTP_STATUS"
             exit 1

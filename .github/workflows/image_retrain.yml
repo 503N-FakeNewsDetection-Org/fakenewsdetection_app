@@ -57,9 +57,13 @@ jobs:
         PY
 
     - name: Unit tests
+      env:
+        PYTHONPATH: ${{ github.workspace }}
       run: pytest -q tests/image_tests/unit_tests.py
 
     - name: Integration tests
+      env:
+        PYTHONPATH: ${{ github.workspace }}
       run: pytest -q tests/image_tests/integration_tests.py
 
     - name: Retrain model (creates shadow blob)
