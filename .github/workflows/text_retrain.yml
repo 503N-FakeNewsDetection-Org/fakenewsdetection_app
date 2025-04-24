@@ -24,7 +24,7 @@ jobs:
         pip install --upgrade pip
         pip install torch==2.6.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu \
             transformers pandas scikit-learn numpy fastapi uvicorn pydantic \
-            azure-storage-blob python-dotenv mlflow tqdm unittest
+            azure-storage-blob python-dotenv mlflow tqdm pytest
 
     - name: Download production weights & user CSV
       env:
@@ -46,10 +46,10 @@ jobs:
         PY
 
     - name: Unit tests
-      run: python -m unittest tests.text_tests.unit_tests
+      run: pytest -q tests/text_tests/unit_tests.py
 
     - name: Integration tests
-      run: python -m unittest tests.text_tests.integration_tests
+      run: pytest -q tests/text_tests/integration_tests.py
 
     - name: Retrain model (creates shadow blob)
       id: retrain
