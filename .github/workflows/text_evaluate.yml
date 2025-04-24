@@ -3,7 +3,7 @@ name: Evaluate Text Shadow Model
 on:
   workflow_dispatch:
   schedule:
-    - cron:  '0 0 * * 1'
+    - cron:  '0 0 * * 1'  # every monday at 00:00
 
 jobs:
   evaluate:
@@ -38,12 +38,12 @@ jobs:
             res = r.json()["data"]["result"]
             return 0 if not res else float(res[0]["value"][1])
 
-        prod     = increase(model_inferences_total{job="{service}", role="prod"}[1d])
-        shadow   = increase(shadow_inferences_total{job="{service}"}[1d])
-        agreePct = increase(shadow_agree_total{job="{service}"}[1d])
+        prod     = q(f'increase(model_inferences_total{{job="{service}", role="prod"}}[1d])')
+        shadow   = q(f'increase(shadow_inferences_total{{job="{service}"}}[1d])')
+        agreePct = q(f'increase(shadow_agree_total{{job="{service}"}}[1d])')
 
 
-        print(f"prod={prod}  shadow={shadow}  agree={agree}")
+        print(f"prod={prod}  shadow={shadow}  agreePct={agreePct}")
         if prod == 0 or shadow == 0:
             print("No traffic yet – skipping"); sys.exit(0)
 
