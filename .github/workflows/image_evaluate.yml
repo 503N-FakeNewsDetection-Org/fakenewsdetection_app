@@ -26,7 +26,8 @@ jobs:
       run: |
         python - <<'PY'
         import os, sys, requests, json
-        from azure.storage.blob import BlobServiceClient, ResourceNotFoundError
+        from azure.storage.blob import BlobServiceClient
+        from azure.core.exceptions import ResourceNotFoundError
         prom   = os.environ["PROM_URL"].rstrip("/")
         svc    = BlobServiceClient.from_connection_string(os.environ["AZ_CONN"]).get_container_client(os.environ["CONTAINER"])
         service= os.environ["SERVICE"]
@@ -45,7 +46,7 @@ jobs:
         if prod == 0 or shadow == 0:
             print("No traffic yet – skipping"); sys.exit(0)
 
-        counts_ok   = abs(prod - shadow) / prod <= 0.02     # ≤2 % diff
+        counts_ok   = abs(prod - shadow) / prod <= 0.02     # ≤2 % diff
         agreement   = agree / shadow if shadow else 0
         agreement_ok= agreement >= 0.85
 
