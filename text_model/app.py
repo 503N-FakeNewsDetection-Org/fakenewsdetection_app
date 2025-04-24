@@ -155,8 +155,8 @@ def predict(req: Req):
         idx   = int(probs.argmax())
         conf  = float(probs[idx])*100
     label = "Fake" if idx==1 else "Real"
-    PROD_INF.labels(CURRENT_ROLE).inc()
-    LATENCY.labels(CURRENT_ROLE).observe(latency)
+    PROD_INF.labels("prod").inc()
+    LATENCY.labels("prod").observe(latency)
 
     # secondary compare
     if secondary_model:

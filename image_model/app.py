@@ -122,8 +122,8 @@ async def predict(file: UploadFile = File(...)):
         idx    = int(probs.argmax())
         conf   = float(probs[idx])*100
         label  = primary_model.config.id2label[idx]
-    PROD_INF.labels(CURRENT_ROLE).inc()
-    LATENCY.labels(CURRENT_ROLE).observe(latency)
+    PROD_INF.labels("prod").inc()
+    LATENCY.labels("prod").observe(latency)
 
     if secondary_model:
         with torch.no_grad():
