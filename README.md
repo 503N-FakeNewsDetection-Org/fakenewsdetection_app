@@ -5,6 +5,7 @@
 2. Upon performing the **first** retraining workflow for each model, the data on azure (data through user feedback, which I have populated right now so you can test it) will be **deleted**. In case you would like to test again, repopulate the containers by querying the actual application and choosing to give feedback. Make sure they are **enough** (at least 20 for the text model, at least 10 AI images and 10 human images for the image model) and that they are **UNIQUE** (Identical queries will not be saved!)
 3. I have commented out the "on schedule" lines for all workflows for testing purposes. They are still ready to be manually triggered.
 4. In case of anything, kindly contact me since only I have access to my azure account.
+5. **UPDATE: Sun, April 27:** My student 100$ credits have expired. If turning on the container apps is needed, kindly send me an email and I will load up more credits and turn them on again.
 
 ## Project Overview
 This project is a Minimum Viable Product (MVP) designed to detect fake news using machine learning models. It includes both image and text models to analyze news content and determine its authenticity. The MVP status means that while the core functionality is present, there are areas for further development and optimization, such as security, data storage, and human intervention.
